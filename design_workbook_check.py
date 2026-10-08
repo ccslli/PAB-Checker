@@ -358,6 +358,7 @@ class Grid:
     def __init__(self, name, rows):
         self.name = name
         self.rows = [list(r) for r in rows]
+        self.hidden = []         # (visible value, hidden value) under merged cells
         self.nrows = len(self.rows)
         self.ncols = max((len(r) for r in self.rows), default=0)
 
@@ -713,6 +714,11 @@ def _value_right_of(g, r, c, reach=14):
 
 def parse_diagram(g, rep):
     T = "Network_Diagram"
+    if g.hidden:
+        rep.warn(T, "Hidden data detected underneath %d merged cell(s). Only the visible (first) "
+                    "value was used; the hidden values were ignored. To see the hidden data, select "
+                    "the merged cell and unmerge it (Home > Merge & Center).\n%s"
+                 % (len(g.hidden), "\n".join("          %s  <- hidden underneath: %s" % p for p in g.hidden)))
     instances = []
     claimed = {}
     for r in range(DIAGRAM_FIRST_ROW, g.nrows + 1):
@@ -1459,17 +1465,21 @@ def read_grids(wb):
         vals = ws.Range(ws.Cells(1, 1), ws.Cells(last_r, last_c)).Value
         if not isinstance(vals, tuple):
             vals = ((vals,),)
+        hidden = []
         if key in MERGE_CLEAN_SHEETS:
-            vals = _drop_values_hidden_by_merges(ws, vals)
+            vals, hidden = _drop_values_hidden_by_merges(ws, vals)
         grids[key] = Grid(ws.Name, vals)
+        grids[key].hidden = hidden
     return grids
 
 
 def _drop_values_hidden_by_merges(ws, vals):
     """A merged block only shows its top-left cell, but the other cells can still
     hold old values (e.g. a previous hostname).  Blank those so only what is
-    visible in Excel gets checked."""
+    visible in Excel gets checked.
+    Returns (cleaned rows, [(visible value, hidden value), ...])."""
     rows = [list(r) for r in vals]
+    hidden = []
     for r, row in enumerate(rows, 1):
         for c, v in enumerate(row, 1):
             if v is None or v == "":
@@ -1478,8 +1488,12 @@ def _drop_values_hidden_by_merges(ws, vals):
             if cell.MergeCells:
                 area = cell.MergeArea
                 if area.Row != r or area.Column != c:
+                    top = rows[area.Row - 1][area.Column - 1] if area.Row <= len(rows) else None
+                    pair = (clean(top) or "(blank)", clean(v))
+                    if pair not in hidden:
+                        hidden.append(pair)
                     row[c - 1] = None
-    return rows
+    return rows, hidden
 
 
 def main():
