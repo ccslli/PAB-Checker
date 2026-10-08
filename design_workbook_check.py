@@ -1,0 +1,1596 @@
+#!/usr/bin/env python3
+r"""
+design_workbook_check.py
+========================
+Cross-checks the tabs of a network design workbook against each other.
+
+Usage (Windows, Excel installed, `pip install pywin32 xlwings`):
+
+    python design_workbook_check.py
+
+Pick one of the workbooks already open in Excel, or enter 0 to browse for a
+file.  The workbook is only read, never modified, and is left open.  Results
+are printed and also written next to the workbook as
+<workbook name>_validation_<timestamp>.txt (findings + everything parsed).
+
+Everything likely to need adjusting (sheet names, column letters, equipment
+rules, AP model mapping, fixed cells) is in the CONFIGURATION block below.
+"""
+
+import datetime
+import difflib
+import math
+import os
+import re
+import sys
+import traceback
+from collections import Counter, OrderedDict, defaultdict
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+
+# Tab names (first name is the display name; others are accepted alternates).
+# Matching ignores case, spaces and underscores.
+SHEETS = OrderedDict([
+    ("notes",   ["Notes"]),
+    ("diagram", ["Network_Diagram"]),
+    ("drop",    ["Drop_List"]),
+    ("wired",   ["Wired_Equipment_List", "Wired_Equipment"]),
+    ("wdata",   ["Wireless_Design_Data"]),
+    ("wequip",  ["Wireless_Equipment_List"]),
+    ("pos",     ["POS"]),
+    ("video",   ["Video Servers & Consoles"]),
+    ("camera",  ["Camera Information"]),
+])
+
+# ---- Notes ------------------------------------------------------------------
+# Section 1 titles -> accepted spellings.  "POS" is included so that a POS
+# block in Notes (if one exists) is picked up for the POS tab check.
+NOTES_SECTIONS = OrderedDict([
+    ("Apple Cache",       ["Apple Cache", "Apple Caching"]),
+    ("LONWorks",          ["LONWorks", "LON Works"]),
+    ("CAASS",             ["CAASS"]),
+    ("PBX",               ["PBX"]),
+    ("EUM",               ["EUM"]),
+    ("WTMC",              ["WTMC"]),
+    ("Safer Access",      ["Safer Access"]),
+    ("IPDVS",             ["IPDVS"]),
+    ("CyberShift Clocks", ["CyberShift Clocks", "CyberShift", "Cyber Shift"]),
+    ("District Office",   ["District Office"]),
+    ("POS",               ["POS", "Point of Sale", "Point of Service"]),
+])
+NOTES_EXPECTED_TITLE_COL = "A"
+# Used only when a section has no "Component | Old ... | New ... | VLAN" header
+NOTES_NEW_SWITCH_OFFSET = 2      # columns right of the title column
+NOTES_VLAN_OFFSET = 3
+NOTES_SKIP_VALUES = {"", "na", "none", "tbd", "notused", "notapplicable"}
+
+# ---- Network_Diagram --------------------------------------------------------
+DIAGRAM_FIRST_ROW = 9
+
+# ---- Drop_List --------------------------------------------------------------
+DROP_PORT_COL = "E"
+DROP_VLAN_COL = "I"
+DROP_TYPE_COL = "K"              # where IOT_IPDVS is expected
+DROP_WIRELESS_COL = "P"          # compared with Wireless_Design_Data column D
+DROP_IPDVS_LABEL = "IOT_IPDVS"
+
+# ---- Wired_Equipment_List ---------------------------------------------------
+WIRED_FIRST_ROW = 4
+WIRED_MODEL_COL = "B"
+WIRED_DESC_COL = "C"
+WIRED_QTY_COLS = ("D", "E")
+WIRED_ROOM_COL = "H"
+ACCESS_MODEL = "C9300X"          # model token inside hostnames
+X1_PLUS_THRESHOLD = 36           # X1+ line required above this many access switches
+# A C9300X whose Notes status says "reused" is not counted as new equipment.
+EXCLUDE_REUSED_FROM_NEW_COUNT = True
+# Part numbers that must have nothing in D or E
+WIRED_MUST_BE_BLANK = ["C1161X-8P", "MS130-24X-HW", "7X02TVVU00", "F1DC108V"]
+
+# ---- Wireless_Design_Data ---------------------------------------------------
+WDATA_FIRST_ROW = 5
+WDATA_MATCH_COL = "D"            # must equal Drop_List column P
+WDATA_PORT_COL = "G"
+WDATA_X_COL = "H"
+WDATA_MODEL_COL = "L"
+
+# ---- Wireless_Equipment_List ------------------------------------------------
+WEQUIP_MODEL_COL = "B"
+WEQUIP_DESC_COL = "C"
+WEQUIP_QTY_COLS = ("D", "E")
+# (part number prefix, text the description must contain, name used in
+#  Wireless_Design_Data column L).  A design name of None = line is ignored.
+# NOTE: the two Cisco lines are mapped exactly as specified (9176D1 <-> "Cisco
+# 9178", 9178I <-> "Cisco 9176").  If that was a typo, swap the two names.
+WIRELESS_MAP = [
+    ("MR46E-HW",      "",            "MR46E"),
+    ("MR56-HW",       "",            "MR56"),
+    ("MR57-HW",       "",            "MR57"),
+    ("MR86-HW_Omni",  "",            "MR86-Omni"),
+    ("MR86-HW_Patch", "",            "MR86-Patch"),
+    ("CW9176D1-CFG",  "Old IPSchema", None),
+    ("CW9176D1-CFG",  "IPSchema2",   "Cisco 9178"),
+    ("CW9178I-CFG",   "Old IPSchema", None),
+    ("CW9178I-CFG",   "IPSchema2",   "Cisco 9176"),
+]
+
+# ---- POS --------------------------------------------------------------------
+POS_PORT_COL = "G"
+POS_X_COL = "H"
+
+# ---- Video Servers & Consoles -----------------------------------------------
+# (label, X# cell, port cell, regex matched against the Notes IPDVS component)
+VIDEO_SPLIT_CELLS = [
+    ("Server 1 NIC", "E8",  "E9",  r"(server|srv)\s*1\b.*nic|nic.*(server|srv)\s*1\b"),
+    ("Server 1 IMM", "E11", "E12", r"(server|srv)\s*1\b.*imm|imm.*(server|srv)\s*1\b"),
+    ("Server 2 NIC", "F8",  "F9",  r"(server|srv)\s*2\b.*nic|nic.*(server|srv)\s*2\b"),
+    ("Server 2 IMM", "F11", "F12", r"(server|srv)\s*2\b.*imm|imm.*(server|srv)\s*2\b"),
+    ("UPS 1",        "E14", "E15", r"\bups(\s*1)?\b"),
+]
+# (label, cell holding "X#/port", regex matched against the Notes component)
+VIDEO_COMBINED_CELLS = [
+    ("MVS 1", "E28", r"\bmvs\s*1\b"),
+    ("MVS 2", "E29", r"\bmvs\s*2\b"),
+    ("MVS 3", "E30", r"\bmvs\s*3\b"),
+]
+# Tabs searched for a "Switch Name" / "Switch Port" header; every port listed
+# under it must be IOT_IPDVS in Drop_List column K.
+SWITCH_TABLE_SHEETS = ["video", "camera"]
+SWITCH_TABLE_HEADER_ROWS = 40    # how far down to look for the header
+# Also require the fixed Video cells above to be IOT_IPDVS in Drop_List?
+VIDEO_FIXED_CELLS_MUST_BE_IPDVS = True
+
+# =============================================================================
+# GENERIC HELPERS
+# =============================================================================
+
+HOST_RE = re.compile(
+    r"(?<![A-Za-z0-9_\-])"
+    r"([A-Za-z0-9\-]+(?:_[A-Za-z0-9\-]+)*?_X\d+[A-Za-z]?(?![A-Za-z0-9])"
+    r"(?:_[A-Za-z0-9\-]+)*)"
+)
+
+
+def col(letter):
+    """'A' -> 1, 'AA' -> 27"""
+    n = 0
+    for ch in letter.upper():
+        n = n * 26 + (ord(ch) - 64)
+    return n
+
+
+def col_letter(n):
+    s = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        s = chr(65 + rem) + s
+    return s
+
+
+def a1(r, c):
+    return "%s%d" % (col_letter(c), r)
+
+
+def cell_rc(addr):
+    m = re.match(r"^([A-Za-z]+)(\d+)$", addr)
+    return int(m.group(2)), col(m.group(1))
+
+
+def clean(v):
+    """Cell value -> tidy string ('' for empty)."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, datetime.datetime):
+        return "%d/%d/%d" % (v.month, v.day, v.year)
+    if isinstance(v, float):
+        if v != v or v in (float("inf"), float("-inf")):
+            return ""
+        return str(int(v)) if v == int(v) else str(v)
+    if isinstance(v, int):
+        return str(v)
+    return re.sub(r"\s+", " ", str(v).replace("\xa0", " ")).strip()
+
+
+def norm(v):
+    """Lower-case alphanumerics only - for forgiving text comparison."""
+    return re.sub(r"[^a-z0-9]", "", clean(v).lower())
+
+
+def num(v):
+    """None if blank, a number if numeric, otherwise the text itself."""
+    t = clean(v)
+    if t == "":
+        return None
+    try:
+        f = float(t)
+        return int(f) if f.is_integer() else f
+    except ValueError:
+        return t
+
+
+def is_blank(v):
+    n = num(v)
+    return n is None or n == 0
+
+
+def qty(d, e):
+    """Quantity for a row: column E when numeric, otherwise column D."""
+    for v in (e, d):
+        n = num(v)
+        if isinstance(n, (int, float)):
+            return n
+    return 0
+
+
+def parse_port(v):
+    """41, '41', 'Gi1/0/41', 'Port 41' -> 41 ; None when there is no number."""
+    nums = re.findall(r"\d+", clean(v))
+    return int(nums[-1]) if nums else None
+
+
+def port_is_simple(v):
+    return bool(re.fullmatch(r"\d+", clean(v)))
+
+
+def parse_x(v):
+    """'X5', 'x 5', 5, or a full hostname -> 5"""
+    t = clean(v)
+    if not t:
+        return None
+    m = HOST_RE.search(t)
+    if m:
+        return host_x(m.group(1))
+    m = re.search(r"(?<![A-Za-z0-9])X\s*(\d+)", t, re.I)
+    if m:
+        return int(m.group(1))
+    if re.fullmatch(r"\d+", t):
+        return int(t)
+    return None
+
+
+def host_x(host):
+    m = re.search(r"_X(\d+)[A-Za-z]?(?![A-Za-z0-9])", host, re.I)
+    return int(m.group(1)) if m else None
+
+
+def host_model(host):
+    """Token immediately before the X# token, e.g. C9300X."""
+    toks = host.split("_")
+    for i, t in enumerate(toks):
+        if re.fullmatch(r"X\d+[A-Za-z]?", t, re.I):
+            return toks[i - 1].upper() if i >= 2 else ""
+    return ""
+
+
+def host_room(host):
+    """'..._RM-232' -> '232' ('' when the hostname has no room token)."""
+    toks = host.split("_")
+    for i, t in enumerate(toks):
+        if re.fullmatch(r"X\d+[A-Za-z]?", t, re.I):
+            rest = "_".join(toks[i + 1:])
+            return re.sub(r"^(RM|ROOM)[\-_ ]*", "", rest, flags=re.I)
+    return ""
+
+
+def parse_switch_port(v):
+    """
+    'HOST / 41', 'HOST/41', 'HOST \\ 41', 'X5/13', 'X5 / 13'
+    -> dict(raw, host, x, port)   (host is upper-cased; None when only X# given)
+    """
+    t = clean(v)
+    res = {"raw": t, "host": None, "x": None, "port": None}
+    if not t:
+        return res
+    m = HOST_RE.search(t)
+    if m:
+        res["host"] = m.group(1).upper()
+        res["x"] = host_x(res["host"])
+        nums = re.findall(r"\d+", t[m.end():])
+        res["port"] = int(nums[-1]) if nums else None
+        return res
+    m = re.search(r"(?<![A-Za-z0-9])X\s*(\d+)\s*[/\\]\s*[A-Za-z]*\s*(\d+(?:/\d+)*)", t, re.I)
+    if m:
+        res["x"] = int(m.group(1))
+        res["port"] = int(m.group(2).split("/")[-1])
+    return res
+
+
+def norm_vlan(v):
+    t = clean(v)
+    m = re.fullmatch(r"(?:vlan)?\s*(\d+)", t, re.I)
+    return m.group(1) if m else re.sub(r"\s+", "", t.upper())
+
+
+MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def parse_date(v):
+    """Excel date / serial / text containing a date -> datetime.date or None."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, datetime.datetime) or isinstance(v, datetime.date):
+        try:
+            return datetime.date(v.year, v.month, v.day)
+        except Exception:
+            return None
+    if isinstance(v, (int, float)):
+        if 30000 < v < 80000:
+            return datetime.date(1899, 12, 30) + datetime.timedelta(days=int(v))
+        return None
+    t = clean(v)
+    try:
+        m = re.search(r"(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})", t)
+        if m:
+            return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        m = re.search(r"(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})", t)
+        if m:
+            y = int(m.group(3))
+            y += 2000 if y < 100 else 0
+            return datetime.date(y, int(m.group(1)), int(m.group(2)))
+        m = re.search(r"([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})", t)
+        if m and m.group(1)[:3].lower() in MONTHS:
+            return datetime.date(int(m.group(3)), MONTHS[m.group(1)[:3].lower()], int(m.group(2)))
+        m = re.search(r"(\d{1,2})\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})", t)
+        if m and m.group(2)[:3].lower() in MONTHS:
+            return datetime.date(int(m.group(3)), MONTHS[m.group(2)[:3].lower()], int(m.group(1)))
+    except ValueError:
+        pass
+    return None
+
+
+def close_match(name, candidates):
+    hit = difflib.get_close_matches(name, list(candidates), n=1, cutoff=0.8)
+    return hit[0] if hit else None
+
+
+class Grid:
+    """A sheet as a plain 2-D block of values, addressed 1-based like Excel."""
+
+    def __init__(self, name, rows):
+        self.name = name
+        self.rows = [list(r) for r in rows]
+        self.nrows = len(self.rows)
+        self.ncols = max((len(r) for r in self.rows), default=0)
+
+    def get(self, r, c):
+        if 1 <= r <= self.nrows and 1 <= c <= len(self.rows[r - 1]):
+            return self.rows[r - 1][c - 1]
+        return None
+
+    def text(self, r, c):
+        return clean(self.get(r, c))
+
+    def at(self, addr):
+        r, c = cell_rc(addr)
+        return self.get(r, c)
+
+    def row_cells(self, r):
+        """[(col, text)] for the non-empty cells of a row."""
+        if not (1 <= r <= self.nrows):
+            return []
+        out = []
+        for c, v in enumerate(self.rows[r - 1], 1):
+            t = clean(v)
+            if t:
+                out.append((c, t))
+        return out
+
+
+class Report:
+    LEVELS = ["ERROR", "WARN", "INFO", "PASS"]
+
+    def __init__(self):
+        self.items = []          # (tab, level, message)
+
+    def error(self, tab, msg):
+        self.items.append((tab, "ERROR", msg))
+
+    def warn(self, tab, msg):
+        self.items.append((tab, "WARN", msg))
+
+    def info(self, tab, msg):
+        self.items.append((tab, "INFO", msg))
+
+    def ok(self, tab, msg):
+        self.items.append((tab, "PASS", msg))
+
+    def count(self, level):
+        return sum(1 for i in self.items if i[1] == level)
+
+    def render(self, tab_order):
+        lines = []
+        lines.append("SUMMARY: %d error(s), %d warning(s), %d passed check(s)"
+                     % (self.count("ERROR"), self.count("WARN"), self.count("PASS")))
+        tabs = list(tab_order) + [t for t in dict.fromkeys(i[0] for i in self.items)
+                                  if t not in tab_order]
+        for tab in tabs:
+            mine = [i for i in self.items if i[0] == tab]
+            if not mine:
+                continue
+            lines.append("")
+            lines.append("=" * 78)
+            lines.append(tab)
+            lines.append("=" * 78)
+            for level in self.LEVELS:
+                for _, lv, msg in mine:
+                    if lv == level:
+                        lines.append("[%-5s] %s" % (lv, msg))
+        return "\n".join(lines)
+
+
+# =============================================================================
+# NOTES
+# =============================================================================
+
+def _section_title(text):
+    """Return the canonical section name if `text` is one of the titles."""
+    if not text or len(text) > 45:
+        return None
+    for name, aliases in NOTES_SECTIONS.items():
+        for alias in aliases:
+            pat = r"^\s*" + r"[\s_\-]*".join(re.escape(w) for w in alias.split()) + r"(?![A-Za-z])"
+            if re.match(pat, text, re.I):
+                return name
+    return None
+
+
+def _title_at(g, r, c):
+    """Title cell = a known title sitting alone on its row."""
+    name = _section_title(g.text(r, c))
+    if name and len(g.row_cells(r)) == 1:
+        return name
+    return None
+
+
+def find_latest_design_notes(g, rep):
+    T = "Notes"
+    hits = []
+    for r in range(1, g.nrows + 1):
+        for c in (1, 2):
+            t = g.text(r, c)
+            if "design notes" in t.lower() and len(t) <= 45:
+                d = parse_date(t)
+                if d is None:
+                    for cc in range(1, min(g.ncols, 6) + 1):
+                        if cc != c:
+                            d = parse_date(g.get(r, cc))
+                            if d:
+                                break
+                hits.append((r, d))
+                break
+    if not hits:
+        rep.warn(T, "No 'Design Notes' heading found in column A/B - the whole sheet was used.")
+        return 1, g.nrows, None
+    dated = [h for h in hits if h[1]]
+    if dated:
+        chosen = max(dated, key=lambda h: (h[1], h[0]))
+        if len(dated) < len(hits):
+            rep.warn(T, "Some 'Design Notes' headings have no readable date (rows %s); they were "
+                        "ignored when picking the latest." %
+                     ", ".join(str(h[0]) for h in hits if not h[1]))
+    else:
+        chosen = hits[-1]
+        rep.warn(T, "No readable date beside any 'Design Notes' heading - used the last one "
+                    "on the sheet (row %d)." % chosen[0])
+    later = [h[0] for h in hits if h[0] > chosen[0]]
+    end = (min(later) - 1) if later else g.nrows
+    rep.info(T, "Found %d 'Design Notes' section(s): %s. Using the one at row %d (%s), rows %d-%d."
+             % (len(hits),
+                ", ".join("row %d = %s" % (h[0], h[1] or "no date") for h in hits),
+                chosen[0], chosen[1] or "no date", chosen[0], end))
+    if later and chosen[0] != max(h[0] for h in hits):
+        rep.warn(T, "The latest-dated Design Notes section is not the lowest one on the page.")
+    return chosen[0], end, chosen[1]
+
+
+def parse_notes_sections(g, start, end, rep):
+    """Section 1: Apple Cache, LONWorks, ... -> list of entries."""
+    T = "Notes"
+    entries = []
+    exp_col = col(NOTES_EXPECTED_TITLE_COL)
+    for r in range(start, end + 1):
+        for c, _ in g.row_cells(r):
+            name = _title_at(g, r, c)
+            if not name:
+                continue
+            if c != exp_col:
+                rep.warn(T, "Section '%s' title is in column %s (row %d); expected column %s."
+                         % (name, col_letter(c), r, NOTES_EXPECTED_TITLE_COL))
+            # header row: Component | Old Switch / Port | New Switch / Port | VLAN
+            comp_c, new_c, vlan_c, first = c, c + NOTES_NEW_SWITCH_OFFSET, c + NOTES_VLAN_OFFSET, r + 1
+            for hr in (r + 1, r + 2):
+                cells = g.row_cells(hr)
+                if any("component" in t.lower() for _, t in cells):
+                    for cc, t in cells:
+                        tl = t.lower()
+                        if "component" in tl:
+                            comp_c = cc
+                        elif "new" in tl:
+                            new_c = cc
+                        elif "vlan" in tl:
+                            vlan_c = cc
+                    first = hr + 1
+                    break
+            found = 0
+            for rr in range(first, end + 1):
+                comp = g.text(rr, comp_c)
+                new_raw = g.text(rr, new_c)
+                if not comp and not new_raw:
+                    break
+                if _title_at(g, rr, comp_c) or norm(comp) in ("oldswitches", "newswitches"):
+                    break
+                found += 1
+                sp = parse_switch_port(new_raw)
+                entries.append({
+                    "section": name, "component": comp, "row": rr,
+                    "cell": a1(rr, new_c), "raw": new_raw,
+                    "host": sp["host"], "x": sp["x"], "port": sp["port"],
+                    "vlan": norm_vlan(g.get(rr, vlan_c)), "vlan_raw": g.text(rr, vlan_c),
+                })
+            if not found:
+                rep.info(T, "Section '%s' (row %d) has no rows under it." % (name, r))
+    return entries
+
+
+def parse_notes_switches(g, start, end, rep):
+    """Section 2: MDF / IDFn / labs -> Old Switches / New Switches lists."""
+    switches = []
+    loc, mode, mcol = None, None, None
+    for r in range(start, end + 1):
+        cells = g.row_cells(r)
+        marker = None
+        for c, t in cells:
+            n = norm(t)
+            if n in ("oldswitches", "oldswitch"):
+                marker = ("old", c)
+            elif n in ("newswitches", "newswitch"):
+                marker = ("new", c)
+            if marker:
+                break
+        if marker:
+            mode, mcol = marker
+            for up in (r - 1, r - 2):           # location name sits just above
+                above = g.text(up, mcol)
+                if above:
+                    if (not HOST_RE.search(g.text(up, mcol + 1))
+                            and norm(above) not in ("oldswitches", "newswitches")):
+                        loc = above
+                    break
+                if g.row_cells(up):
+                    break
+            continue
+        if not mode:
+            continue
+        host, hcol = None, None
+        for c, t in cells:
+            if c > mcol:
+                m = HOST_RE.search(t)
+                if m:
+                    host, hcol = m.group(1).upper(), c
+                    break
+        if not host:
+            mode = None                          # block finished
+            continue
+        if hcol != mcol + 1:
+            rep.warn("Notes", "Row %d: hostname %s is in column %s; expected column %s."
+                     % (r, host, col_letter(hcol), col_letter(mcol + 1)))
+        switches.append({
+            "loc": loc or "UNKNOWN", "kind": mode, "label": g.text(r, mcol),
+            "host": host, "status": g.text(r, hcol + 1), "row": r,
+            "x": host_x(host), "model": host_model(host), "room": host_room(host),
+        })
+    return switches
+
+
+def loc_type(name):
+    n = norm(name)
+    if n.startswith("mdf"):
+        return "MDF"
+    if n.startswith("idf"):
+        return "IDF"
+    return "OTHER"
+
+
+def is_access(sw):
+    return "core" not in sw["label"].lower()
+
+
+def is_new_access_model(sw):
+    if not sw["model"].startswith(ACCESS_MODEL):
+        return False
+    if EXCLUDE_REUSED_FROM_NEW_COUNT and "reus" in sw["status"].lower():
+        return False
+    return True
+
+
+def parse_notes(g, rep):
+    T = "Notes"
+    start, end, date = find_latest_design_notes(g, rep)
+    entries = parse_notes_sections(g, start, end, rep)
+    switches = parse_notes_switches(g, start, end, rep)
+    new = [s for s in switches if s["kind"] == "new"]
+    old = [s for s in switches if s["kind"] == "old"]
+
+    new_hosts = OrderedDict()
+    for s in new:
+        if s["host"] in new_hosts:
+            rep.error(T, "New switch %s is listed more than once (rows %d and %d)."
+                      % (s["host"], new_hosts[s["host"]]["row"], s["row"]))
+        else:
+            new_hosts[s["host"]] = s
+    by_x = defaultdict(list)
+    for s in new_hosts.values():
+        if s["x"] is not None:
+            by_x[s["x"]].append(s["host"])
+    for x, hosts in by_x.items():
+        if len(hosts) > 1:
+            rep.error(T, "X%d is used by more than one new switch: %s" % (x, ", ".join(hosts)))
+
+    locs = OrderedDict()
+    for s in new_hosts.values():
+        L = locs.setdefault(s["loc"], {"type": loc_type(s["loc"]), "switches": [], "rooms": set()})
+        L["switches"].append(s)
+        if s["room"]:
+            L["rooms"].add(s["room"].upper())
+    if not new:
+        rep.error(T, "No 'New Switches' blocks were found in the latest Design Notes section.")
+    else:
+        rep.info(T, "New switches per location: " + "; ".join(
+            "%s = %d (%d access, %d %s)" % (
+                name, len(L["switches"]), sum(1 for s in L["switches"] if is_access(s)),
+                sum(1 for s in L["switches"] if is_new_access_model(s)), ACCESS_MODEL)
+            for name, L in locs.items()))
+    found_sections = list(dict.fromkeys(e["section"] for e in entries))
+    missing = [n for n in NOTES_SECTIONS if n not in found_sections and n != "POS"]
+    rep.info(T, "Sections parsed: %s." % (", ".join(found_sections) or "none"))
+    if missing:
+        rep.info(T, "Sections not present in the latest Design Notes: %s." % ", ".join(missing))
+
+    # internal consistency of Section 1 against Section 2
+    for e in entries:
+        ref = "%s / %s (%s)" % (e["section"], e["component"], e["cell"])
+        if norm(e["raw"]) in NOTES_SKIP_VALUES:
+            e["skip"] = True
+            continue
+        e["skip"] = False
+        if e["x"] is None or e["port"] is None:
+            rep.error(T, "%s: could not read a switch and port from '%s'." % (ref, e["raw"]))
+            e["skip"] = True
+            continue
+        if e["host"] is None:
+            hosts = by_x.get(e["x"], [])
+            if len(hosts) == 1:
+                e["host"] = hosts[0]
+            else:
+                rep.error(T, "%s: X%d does not match exactly one new switch." % (ref, e["x"]))
+        elif new_hosts and e["host"] not in new_hosts:
+            hint = close_match(e["host"], new_hosts)
+            rep.error(T, "%s: %s is not in any 'New Switches' list%s."
+                      % (ref, e["host"], " - did you mean %s?" % hint if hint else ""))
+        if not e["vlan"]:
+            rep.warn(T, "%s: no VLAN listed." % ref)
+    seen = {}
+    for e in entries:
+        if e["skip"]:
+            continue
+        key = (e["host"] or "X%s" % e["x"], e["port"])
+        if key in seen:
+            rep.error(T, "%s port %s is assigned twice: '%s / %s' (row %d) and '%s / %s' (row %d)."
+                      % (key[0], key[1], seen[key]["section"], seen[key]["component"],
+                         seen[key]["row"], e["section"], e["component"], e["row"]))
+        else:
+            seen[key] = e
+
+    return {"start": start, "end": end, "date": date, "entries": entries,
+            "switches": switches, "new": new, "old": old, "new_hosts": new_hosts,
+            "old_hosts": OrderedDict((s["host"], s) for s in old),
+            "by_x": by_x, "locs": locs}
+
+
+# =============================================================================
+# NETWORK_DIAGRAM
+# =============================================================================
+
+def _find_label(g, r0, c0, word, row_span, col_span):
+    best = None
+    for r in range(r0 + row_span[0], r0 + row_span[1] + 1):
+        for c in range(max(1, c0 + col_span[0]), c0 + col_span[1] + 1):
+            if word in norm(g.text(r, c)):
+                cand = (r - r0, abs(c - c0), r, c)
+                if best is None or cand < best:
+                    best = cand
+    return (best[2], best[3]) if best else None
+
+
+def _value_right_of(g, r, c, reach=14):
+    for cc in range(c + 1, c + reach + 1):
+        t = g.text(r, cc)
+        if not t:
+            continue
+        if HOST_RE.search(t) or "used" in t.lower():
+            return None
+        return num(g.get(r, cc))
+    return None
+
+
+def parse_diagram(g, rep):
+    T = "Network_Diagram"
+    instances = []
+    claimed = {}
+    for r in range(DIAGRAM_FIRST_ROW, g.nrows + 1):
+        for c, t in g.row_cells(r):
+            for m in HOST_RE.finditer(t):
+                host = m.group(1).upper()
+                inst = {"host": host, "cell": a1(r, c), "sfps": None, "ports": None,
+                        "x": host_x(host), "model": host_model(host)}
+                sfp = _find_label(g, r, c, "sfpsused", (1, 3), (-2, 6))
+                anchor = sfp or (r, c)
+                if sfp:
+                    if sfp in claimed:
+                        inst["shared"] = claimed[sfp]
+                    else:
+                        claimed[sfp] = inst["cell"]
+                        inst["sfps"] = _value_right_of(g, sfp[0], sfp[1])
+                        inst["has_block"] = True
+                prt = _find_label(g, anchor[0], anchor[1], "portsused", (1, 3), (-1, 1) if sfp else (-2, 6))
+                if prt and inst.get("has_block"):
+                    inst["ports"] = _value_right_of(g, prt[0], prt[1])
+                instances.append(inst)
+    hosts = OrderedDict()
+    for i in instances:
+        hosts.setdefault(i["host"], []).append(i)
+    for host, lst in hosts.items():
+        blocks = [i for i in lst if i.get("has_block")]
+        if not blocks:
+            rep.warn(T, "%s (%s): no 'SFPs Used' / 'Ports Used' block found beneath it."
+                     % (host, ", ".join(i["cell"] for i in lst)))
+            continue
+        if len(blocks) > 1:
+            rep.warn(T, "%s appears with a usage block %d times (%s)."
+                     % (host, len(blocks), ", ".join(i["cell"] for i in blocks)))
+        for b in blocks:
+            for key, label in (("sfps", "SFPs Used"), ("ports", "Ports Used")):
+                if not isinstance(b[key], (int, float)):
+                    rep.error(T, "%s (%s): '%s' has no number beside it (found %r)."
+                              % (host, b["cell"], label, b[key]))
+    rep.info(T, "%d distinct hostname(s) found from row %d down." % (len(hosts), DIAGRAM_FIRST_ROW))
+    return {"instances": instances, "hosts": hosts}
+
+
+def check_diagram_vs_notes(notes, diagram, rep):
+    T = "Network_Diagram"
+    nh, dh = notes["new_hosts"], diagram["hosts"]
+    bad = 0
+    for h in nh:
+        if h not in dh:
+            bad += 1
+            rep.error(T, "%s (Notes %s, row %d) is not on the diagram."
+                      % (h, nh[h]["loc"], nh[h]["row"]))
+    for h, lst in dh.items():
+        if h in nh:
+            continue
+        bad += 1
+        where = ", ".join(i["cell"] for i in lst)
+        if h in notes["old_hosts"]:
+            rep.error(T, "%s (%s) is an OLD switch in Notes (status '%s') but is on the diagram."
+                      % (h, where, notes["old_hosts"][h]["status"]))
+        else:
+            hint = close_match(h, nh)
+            rep.error(T, "%s (%s) is not in the Notes 'New Switches' lists%s."
+                      % (h, where, " - possible typo of %s" % hint if hint else ""))
+    if not bad:
+        rep.ok(T, "All %d hostnames match the Notes 'New Switches' lists." % len(nh))
+
+
+# =============================================================================
+# DROP_LIST
+# =============================================================================
+
+def parse_drop(g, rep):
+    T = "Drop_List"
+    pc, vc, kc, wc = col(DROP_PORT_COL), col(DROP_VLAN_COL), col(DROP_TYPE_COL), col(DROP_WIRELESS_COL)
+    devices = OrderedDict()
+    cur = None
+    for r in range(1, g.nrows + 1):
+        cells = g.row_cells(r)
+        if not cells:
+            continue
+        m = HOST_RE.search(cells[0][1])
+        if m and len(cells) <= 2:                       # merged hostname row
+            host = m.group(1).upper()
+            if host in devices:
+                rep.error(T, "%s has more than one header row (rows %d and %d)."
+                          % (host, devices[host]["row"], r))
+            cur = devices.setdefault(host, {"host": host, "row": r, "ports": defaultdict(list),
+                                            "x": host_x(host), "model": host_model(host)})
+            continue
+        if cur is None:
+            continue
+        port = parse_port(g.get(r, pc))
+        if port is None:
+            continue
+        cur["ports"][port].append({
+            "row": r, "port": port, "port_raw": g.text(r, pc),
+            "simple": port_is_simple(g.get(r, pc)),
+            "vlan": norm_vlan(g.get(r, vc)), "vlan_raw": g.text(r, vc),
+            "k": g.text(r, kc), "p": g.text(r, wc),
+        })
+    by_x = defaultdict(list)
+    for h, d in devices.items():
+        if d["x"] is not None:
+            by_x[d["x"]].append(h)
+        for port, rows in d["ports"].items():
+            simple = [x for x in rows if x["simple"]]
+            if len(simple) > 1:
+                rep.error(T, "%s port %d is listed %d times (rows %s)."
+                          % (h, port, len(simple), ", ".join(str(x["row"]) for x in simple)))
+    rep.info(T, "%d device block(s) found." % len(devices))
+    return {"devices": devices, "by_x": by_x}
+
+
+def drop_lookup(drop, host, x, port):
+    """-> (status, device hostname, rows, matched_by)
+       status: 'ok' | 'no_device' | 'no_port'"""
+    cands, via = [], "host"
+    if host and host.upper() in drop["devices"]:
+        cands = [host.upper()]
+    elif x is not None and drop["by_x"].get(x):
+        cands, via = drop["by_x"][x], "x"
+    if not cands:
+        return "no_device", None, [], via
+    for h in cands:
+        rows = drop["devices"][h]["ports"].get(port, [])
+        if rows:
+            return "ok", h, ([r for r in rows if r["simple"]] or rows), via
+    return "no_port", cands[0], [], via
+
+
+def check_drop(notes, diagram, drop, rep):
+    T = "Drop_List"
+    devs = drop["devices"]
+    bad = 0
+    wanted = OrderedDict()
+    for h in notes["new_hosts"]:
+        wanted.setdefault(h, []).append("Notes")
+    for h in diagram["hosts"]:
+        wanted.setdefault(h, []).append("Network_Diagram")
+    for h, src in wanted.items():
+        if h not in devs:
+            bad += 1
+            hint = close_match(h, devs)
+            rep.error(T, "%s (from %s) has no block in Drop_List%s."
+                      % (h, " + ".join(src), " - closest is %s" % hint if hint else ""))
+    for h, d in devs.items():
+        if h not in wanted:
+            bad += 1
+            hint = close_match(h, wanted)
+            rep.error(T, "%s (row %d) is not in Notes or Network_Diagram%s."
+                      % (h, d["row"], " - possible typo of %s" % hint if hint else ""))
+    if not bad:
+        rep.ok(T, "All %d devices from Notes / Network_Diagram are present, with no extras." % len(wanted))
+
+    # Notes Section 1 patching: port present + VLAN correct
+    checked = good = 0
+    for e in notes["entries"]:
+        if e.get("skip"):
+            continue
+        checked += 1
+        ref = "Notes %s / %s (%s = '%s')" % (e["section"], e["component"], e["cell"], e["raw"])
+        status, dev, rows, via = drop_lookup(drop, e["host"], e["x"], e["port"])
+        if status == "no_device":
+            rep.error(T, "%s: switch not found in Drop_List." % ref)
+            continue
+        if via == "x" and e["host"] and dev != e["host"]:
+            rep.warn(T, "%s: matched to %s by X# only - hostname differs." % (ref, dev))
+        if status == "no_port":
+            rep.error(T, "%s: port %s is not listed under %s." % (ref, e["port"], dev))
+            continue
+        if not e["vlan"]:
+            continue
+        if any(r["vlan"] == e["vlan"] for r in rows):
+            good += 1
+        else:
+            rep.error(T, "%s: Notes says VLAN %s but %s port %s (row %s, column %s) has '%s'."
+                      % (ref, e["vlan_raw"], dev, e["port"],
+                         ", ".join(str(r["row"]) for r in rows), DROP_VLAN_COL,
+                         ", ".join(r["vlan_raw"] or "blank" for r in rows)))
+    if checked and good == checked:
+        rep.ok(T, "All %d Notes port/VLAN call-outs match Drop_List." % checked)
+    elif checked:
+        rep.info(T, "%d of %d Notes port/VLAN call-outs match Drop_List." % (good, checked))
+
+
+# =============================================================================
+# WIRED_EQUIPMENT_LIST
+# =============================================================================
+
+def expected_pdus(ltype, n_access):
+    """MDF: 4 for up to 4 access switches, 6 from the 5th, then +2 per 6.
+       IDF: minimum 2, +2 for every 6 access switches."""
+    if ltype == "MDF":
+        if n_access <= 4:
+            return 4
+        return 4 + 2 * int(math.ceil((n_access - 4) / 6.0))
+    return max(2, 2 * int(math.ceil(n_access / 6.0)))
+
+
+def classify_wired(model, desc):
+    m, d = model.upper().strip(), desc
+    if m.startswith("AP9571A"):
+        return "pdu"
+    if m.startswith("C9300X-48HXN"):
+        return "c9300x_x0" if re.search(r"-\s*X0\s*$", d, re.I) else "c9300x"
+    if re.match(r"FPR31\d\d-NGFW", m):
+        return "fw"
+    if m.startswith("C8300-2N2S-4T2X"):
+        return "c8300"
+    if m.startswith("C1100TG-1N32A"):
+        return "c1100tg"
+    if m.startswith("C9500-48Y4C"):
+        return "c9500_x1plus" if "X1+" in d.upper().replace(" ", "") else "c9500_x1"
+    if m.startswith("SFP-10/25G-CSR-S"):
+        return "sfp"
+    for b in WIRED_MUST_BE_BLANK:
+        if m.startswith(b.upper()):
+            return "blank"
+    return None
+
+
+def map_room(room_text, locs):
+    """Match a column-H value to a Notes location by name or by room number."""
+    n = norm(room_text)
+    if not n:
+        return None
+    for name in sorted(locs, key=lambda s: -len(norm(s))):
+        ln = norm(name)
+        i = n.find(ln)
+        if ln and i >= 0 and not n[i + len(ln):i + len(ln) + 1].isdigit():
+            return name
+    for name, L in locs.items():
+        for room in L["rooms"]:
+            if re.search(r"(?<![A-Za-z0-9])" + re.escape(room) + r"(?![A-Za-z0-9])",
+                         room_text, re.I):
+                return name
+    return None
+
+
+def check_wired(g, notes, diagram, drop, rep):
+    T = "Wired_Equipment_List"
+    locs = notes["locs"]
+    dc, ec = col(WIRED_QTY_COLS[0]), col(WIRED_QTY_COLS[1])
+    rows, last_room = [], ""
+    for r in range(WIRED_FIRST_ROW, g.nrows + 1):
+        room = g.text(r, col(WIRED_ROOM_COL))
+        if room:
+            last_room = room
+        model, desc = g.text(r, col(WIRED_MODEL_COL)), g.text(r, col(WIRED_DESC_COL))
+        if not model and not desc:
+            continue
+        rows.append({"row": r, "model": model, "desc": desc, "d": g.get(r, dc), "e": g.get(r, ec),
+                     "room": room or last_room, "kind": classify_wired(model, desc)})
+    for x in rows:
+        x["loc"] = map_room(x["room"], locs)
+        x["qty"] = qty(x["d"], x["e"])
+
+    def de(x):
+        return "row %d: D=%s, E=%s" % (x["row"], clean(x["d"]) or "blank", clean(x["e"]) or "blank")
+
+    def pick(kind, loc=None, pool=None):
+        return [x for x in (pool if pool is not None else rows)
+                if x["kind"] == kind and (loc is None or x["loc"] == loc)]
+
+    rooms_ok = any(x["loc"] for x in rows)
+    unmapped = sorted(set(x["room"] for x in rows if x["room"] and not x["loc"] and x["kind"]))
+    if not rooms_ok:
+        rep.warn(T, "Column %s rooms could not be matched to the Notes locations (%s), so "
+                    "per-room checks were replaced by whole-sheet totals."
+                 % (WIRED_ROOM_COL, ", ".join(locs) or "none"))
+    elif unmapped:
+        rep.warn(T, "Room value(s) not matched to a Notes location: %s." % ", ".join(unmapped))
+
+    mdf_names = [n for n, L in locs.items() if L["type"] == "MDF"]
+    mdf = mdf_names[0] if mdf_names else None
+    if rooms_ok and mdf and any(x["loc"] == mdf for x in rows):
+        mdf_rows = [x for x in rows if x["loc"] == mdf]
+    else:
+        mdf_rows = rows
+        if rooms_ok:
+            rep.warn(T, "No rows are tagged with the MDF room - MDF-only items were checked "
+                        "across the whole sheet.")
+
+    all_new = list(notes["new_hosts"].values())
+    total_access = sum(1 for s in all_new if is_access(s))
+    total_model = sum(1 for s in all_new if is_new_access_model(s))
+    mdf_access_model = sum(1 for s in (locs[mdf]["switches"] if mdf else [])
+                           if is_access(s) and is_new_access_model(s))
+
+    # ---- AP9571A PDUs ---------------------------------------------------
+    exp_total = 0
+    for name, L in locs.items():
+        if L["type"] == "OTHER":
+            continue
+        n_acc = sum(1 for s in L["switches"] if is_access(s))
+        exp = expected_pdus(L["type"], n_acc)
+        exp_total += exp
+        if not rooms_ok:
+            continue
+        got_rows = pick("pdu", name)
+        got = sum(x["qty"] for x in got_rows)
+        if not got_rows:
+            rep.error(T, "AP9571A: no PDU line found for %s (expected %d for %d access switches)."
+                      % (name, exp, n_acc))
+        elif got != exp:
+            rep.error(T, "AP9571A in %s: expected %d (%d access switches), found %s (%s)."
+                      % (name, exp, n_acc, got, "; ".join(de(x) for x in got_rows)))
+        else:
+            rep.ok(T, "AP9571A in %s = %d (%d access switches)." % (name, exp, n_acc))
+    if not rooms_ok:
+        got = sum(x["qty"] for x in pick("pdu"))
+        (rep.ok if got == exp_total else rep.error)(
+            T, "AP9571A total: expected %d across MDF/IDFs, found %s." % (exp_total, got))
+    if rooms_ok:
+        for name, L in locs.items():
+            if L["type"] == "OTHER" and sum(x["qty"] for x in pick("pdu", name)):
+                rep.info(T, "AP9571A is listed for %s (labs are excluded from the PDU rule - not checked)." % name)
+
+    # ---- C9300X-48HXN-M (main line + X0 line) ---------------------------
+    sw_rows = pick("c9300x") + pick("c9300x_x0")
+    got_total = sum(x["qty"] for x in sw_rows)
+    if got_total == total_model:
+        rep.ok(T, "C9300X-48HXN-M total (all lines incl. X0) = %d, matching the %s switches in Notes."
+               % (got_total, ACCESS_MODEL))
+    else:
+        rep.error(T, "C9300X-48HXN-M total (all lines incl. X0): expected %d %s switches from Notes, "
+                     "found %s (%s)." % (total_model, ACCESS_MODEL, got_total,
+                                         "; ".join(de(x) for x in sw_rows if x["qty"]) or "nothing entered"))
+    if rooms_ok:
+        for name, L in locs.items():
+            exp = sum(1 for s in L["switches"] if is_new_access_model(s))
+            lr = [x for x in sw_rows if x["loc"] == name]
+            got = sum(x["qty"] for x in lr)
+            if got != exp:
+                rep.error(T, "C9300X-48HXN-M in %s: expected %d, found %s (%s)."
+                          % (name, exp, got, "; ".join(de(x) for x in lr) or "no line"))
+    diag_model = sum(1 for h, lst in diagram["hosts"].items() if lst[0]["model"].startswith(ACCESS_MODEL))
+    notes_model_all = sum(1 for s in all_new if s["model"].startswith(ACCESS_MODEL))
+    if diagram["hosts"] and diag_model != notes_model_all:
+        rep.error(T, "%s hostnames: Notes has %d, Network_Diagram has %d."
+                  % (ACCESS_MODEL, notes_model_all, diag_model))
+    reused = [s["host"] for s in all_new if "reus" in s["status"].lower()]
+    if reused:
+        rep.info(T, "Reused switch(es) not counted as new equipment: %s." % ", ".join(reused))
+
+    x0_rows = pick("c9300x_x0", pool=mdf_rows)
+    if not x0_rows:
+        rep.error(T, "C9300X-48HXN-M '- X0' line not found.")
+    else:
+        got = sum(x["qty"] for x in x0_rows)
+        (rep.ok if got == mdf_access_model else rep.error)(
+            T, "C9300X-48HXN-M - X0 line: expected %d (%s access switches in the MDF), found %s (%s)."
+            % (mdf_access_model, ACCESS_MODEL, got, "; ".join(de(x) for x in x0_rows)))
+
+    # ---- Firewalls: exactly one line with 1 in column E ------------------
+    fw = pick("fw", pool=mdf_rows)
+    filled = [x for x in fw if not is_blank(x["e"])]
+    if not fw:
+        rep.error(T, "No FPR31xx-NGFW-K9 firewall lines found.")
+    elif len(filled) == 1 and num(filled[0]["e"]) == 1:
+        rep.ok(T, "Exactly one firewall selected: %s - %s (row %d)."
+               % (filled[0]["model"], filled[0]["desc"], filled[0]["row"]))
+    elif not filled:
+        rep.error(T, "No firewall has a quantity in column %s (exactly one line should be 1)." % WIRED_QTY_COLS[1])
+    else:
+        rep.error(T, "Firewall: exactly one line should have 1 in column %s, found: %s."
+                  % (WIRED_QTY_COLS[1], "; ".join("%s '%s' %s" % (x["model"], x["desc"], de(x)) for x in filled)))
+
+    # ---- single-quantity MDF items ---------------------------------------
+    for kind, label in (("c8300", "C8300-2N2S-4T2X"), ("c1100tg", "C1100TG-1N32A")):
+        r_ = pick(kind, pool=mdf_rows)
+        if not r_:
+            rep.error(T, "%s line not found." % label)
+        elif len(r_) == 1 and num(r_[0]["e"]) == 1:
+            rep.ok(T, "%s = 1." % label)
+        else:
+            rep.error(T, "%s should have 1 in column %s (%s)."
+                      % (label, WIRED_QTY_COLS[1], "; ".join(de(x) for x in r_)))
+
+    # ---- must be blank -----------------------------------------------------
+    blanks = pick("blank")
+    bad_blank = [x for x in blanks if not (is_blank(x["d"]) and is_blank(x["e"]))]
+    for x in bad_blank:
+        rep.error(T, "%s '%s' should be blank (%s)." % (x["model"], x["desc"], de(x)))
+    if blanks and not bad_blank:
+        rep.ok(T, "All %d must-be-blank lines are blank." % len(blanks))
+
+    # ---- C9500 X1 / X1+ ------------------------------------------------------
+    def has_one(x):
+        return num(x["d"]) == 1 or num(x["e"]) == 1
+
+    x1 = pick("c9500_x1", pool=mdf_rows)
+    if not x1:
+        rep.error(T, "C9500-48Y4C-EDU X1 line not found.")
+    elif all(has_one(x) for x in x1):
+        rep.ok(T, "C9500-48Y4C-EDU X1 = 1.")
+    else:
+        rep.error(T, "C9500-48Y4C-EDU X1 should have 1 in D or E (%s)." % "; ".join(de(x) for x in x1))
+    x1p = pick("c9500_x1plus", pool=mdf_rows)
+    need_plus = total_access > X1_PLUS_THRESHOLD
+    if not x1p:
+        (rep.error if need_plus else rep.info)(T, "C9500-48Y4C-EDU X1+ line not found.")
+    elif need_plus:
+        (rep.ok if all(has_one(x) for x in x1p) else rep.error)(
+            T, "C9500-48Y4C-EDU X1+: %d access switches (> %d) so 1 is required (%s)."
+            % (total_access, X1_PLUS_THRESHOLD, "; ".join(de(x) for x in x1p)))
+    else:
+        if all(is_blank(x["d"]) and is_blank(x["e"]) for x in x1p):
+            rep.ok(T, "C9500-48Y4C-EDU X1+ is blank (%d access switches, threshold %d)."
+                   % (total_access, X1_PLUS_THRESHOLD))
+        else:
+            rep.error(T, "C9500-48Y4C-EDU X1+ should be blank - only %d access switches (%s)."
+                      % (total_access, "; ".join(de(x) for x in x1p)))
+    rep.info(T, "Access-layer switch count: %d in Notes; Drop_List has %d device blocks in total."
+             % (total_access, len(drop["devices"])))
+
+    # ---- SFPs --------------------------------------------------------------
+    sfp = pick("sfp", pool=mdf_rows)
+    exp = total_model * 2 + 8
+    if not sfp:
+        rep.error(T, "SFP-10/25G-CSR-S= line not found.")
+    else:
+        got = sum(x["qty"] for x in sfp)
+        (rep.ok if got == exp else rep.error)(
+            T, "SFP-10/25G-CSR-S=: expected %d (%d x 2 + 8), found %s (%s)."
+            % (exp, total_model, got, "; ".join(de(x) for x in sfp)))
+
+    # ---- MDF-only items entered against another room -----------------------
+    if rooms_ok and mdf_rows is not rows:
+        for x in rows:
+            if (x["kind"] in ("fw", "c8300", "c1100tg", "c9500_x1", "c9500_x1plus", "c9300x_x0", "sfp")
+                    and x["loc"] != mdf and not (is_blank(x["d"]) and is_blank(x["e"]))):
+                rep.warn(T, "MDF-only item %s has a quantity against room '%s' (%s)."
+                         % (x["model"], x["room"], de(x)))
+
+
+# =============================================================================
+# WIRELESS
+# =============================================================================
+
+def check_wireless_data(g, drop, rep):
+    T = "Wireless_Design_Data"
+    counts = Counter()
+    labels = {}
+    seen = {}
+    n = bad = 0
+    for r in range(WDATA_FIRST_ROW, g.nrows + 1):
+        model = g.text(r, col(WDATA_MODEL_COL))
+        port_raw, x_raw = g.text(r, col(WDATA_PORT_COL)), g.text(r, col(WDATA_X_COL))
+        if not port_raw and not x_raw:
+            if model:
+                rep.warn(T, "Row %d has AP model '%s' but no switch/port - not counted." % (r, model))
+            continue
+        if model:
+            counts[norm(model)] += 1
+            labels.setdefault(norm(model), model)
+        else:
+            rep.warn(T, "Row %d has a port but no AP model in column %s." % (r, WDATA_MODEL_COL))
+        port, x = parse_port(port_raw), parse_x(x_raw)
+        n += 1
+        if port is None or x is None:
+            bad += 1
+            rep.error(T, "Row %d: cannot read port '%s' / switch '%s'." % (r, port_raw, x_raw))
+            continue
+        if (x, port) in seen:
+            bad += 1
+            rep.error(T, "Row %d: X%d port %d is already used on row %d." % (r, x, port, seen[(x, port)]))
+        seen[(x, port)] = r
+        status, dev, rows, _ = drop_lookup(drop, None, x, port)
+        if status == "no_device":
+            bad += 1
+            rep.error(T, "Row %d: X%d is not a device in Drop_List." % (r, x))
+        elif status == "no_port":
+            bad += 1
+            rep.error(T, "Row %d: X%d port %d is not listed under %s in Drop_List." % (r, x, port, dev))
+        else:
+            mine = g.text(r, col(WDATA_MATCH_COL))
+            if not any(norm(d["p"]) == norm(mine) for d in rows):
+                bad += 1
+                rep.error(T, "Row %d: column %s '%s' does not match Drop_List column %s '%s' (%s port %d, row %s)."
+                          % (r, WDATA_MATCH_COL, mine, DROP_WIRELESS_COL,
+                             ", ".join(d["p"] or "blank" for d in rows), dev, port,
+                             ", ".join(str(d["row"]) for d in rows)))
+    if n and not bad:
+        rep.ok(T, "All %d AP rows are on Drop_List ports and column %s matches column %s."
+               % (n, WDATA_MATCH_COL, DROP_WIRELESS_COL))
+    rep.info(T, "AP model counts: %s." % (", ".join("%s = %d" % (labels[k], v) for k, v in counts.items()) or "none"))
+    return {"counts": counts, "labels": labels}
+
+
+def check_wireless_equipment(g, wdata, rep):
+    T = "Wireless_Equipment_List"
+    counts, labels = wdata["counts"], wdata["labels"]
+    dc, ec = col(WEQUIP_QTY_COLS[0]), col(WEQUIP_QTY_COLS[1])
+    used = set()
+    seen_lines = set()
+    for r in range(1, g.nrows + 1):
+        model, desc = g.text(r, col(WEQUIP_MODEL_COL)), g.text(r, col(WEQUIP_DESC_COL))
+        if not model:
+            continue
+        for idx, (prefix, must, design) in enumerate(WIRELESS_MAP):
+            if model.upper().startswith(prefix.upper()) and norm(must) in norm(desc):
+                break
+        else:
+            continue
+        if design is None or idx in seen_lines:
+            continue
+        seen_lines.add(idx)
+        used.add(norm(design))
+        exp = counts.get(norm(design), 0)
+        d, e = g.get(r, dc), g.get(r, ec)
+        vals = [num(v) for v in (d, e) if num(v) is not None]
+        okay = all(v == exp for v in vals) and (bool(vals) or exp == 0)
+        msg = ("%s '%s' (row %d): Wireless_Design_Data has %d x '%s'; D=%s, E=%s."
+               % (model, desc, r, exp, design, clean(d) or "blank", clean(e) or "blank"))
+        (rep.ok if okay else rep.error)(T, msg)
+    for idx, (prefix, must, design) in enumerate(WIRELESS_MAP):
+        if design and idx not in seen_lines:
+            (rep.error if counts.get(norm(design), 0) else rep.info)(
+                T, "Line %s%s not found on the sheet." % (prefix, " (%s)" % must if must else ""))
+    for k, v in counts.items():
+        if k not in used:
+            rep.warn(T, "AP model '%s' (%d in Wireless_Design_Data) has no matching equipment line."
+                     % (labels[k], v))
+
+
+# =============================================================================
+# POS
+# =============================================================================
+
+def check_pos(g, notes, rep):
+    T = "POS"
+    rows = []
+    for r in range(1, g.nrows + 1):
+        port_raw, x_raw = g.text(r, col(POS_PORT_COL)), g.text(r, col(POS_X_COL))
+        if not port_raw or not x_raw:
+            continue
+        port, x = parse_port(port_raw), parse_x(x_raw)
+        if port is None or x is None:
+            continue                              # header or free text
+        rows.append({"row": r, "x": x, "port": port})
+    if not rows:
+        rep.warn(T, "No switch/port rows found in columns %s/%s." % (POS_PORT_COL, POS_X_COL))
+        return
+    live = [e for e in notes["entries"] if not e.get("skip")]
+    pos_notes = [e for e in live if e["section"] == "POS"]
+    scope = pos_notes or live
+    known = {(e["x"], e["port"]): e for e in scope}
+    bad = 0
+    for x in rows:
+        if (x["x"], x["port"]) not in known:
+            bad += 1
+            same_port = [e for e in scope if e["port"] == x["port"]]
+            hint = (" Notes has port %d on %s." % (x["port"], ", ".join("X%s (%s)" % (e["x"], e["component"]) for e in same_port))
+                    if same_port else "")
+            rep.error(T, "Row %d: X%d port %d is not called out in Notes%s.%s"
+                      % (x["row"], x["x"], x["port"], " (POS section)" if pos_notes else "", hint))
+    if pos_notes:
+        have = {(x["x"], x["port"]) for x in rows}
+        for e in pos_notes:
+            if (e["x"], e["port"]) not in have:
+                bad += 1
+                rep.error(T, "Notes POS / %s (X%s port %s) is not on the POS tab."
+                          % (e["component"], e["x"], e["port"]))
+    else:
+        rep.info(T, "Notes has no 'POS' section, so POS rows were compared against every Notes call-out.")
+    if not bad:
+        rep.ok(T, "All %d POS rows match Notes." % len(rows))
+
+
+# =============================================================================
+# VIDEO SERVERS & CONSOLES / CAMERA INFORMATION
+# =============================================================================
+
+def _check_ipdvs_port(tab, ref, host, x, port, drop, rep):
+    status, dev, rows, _ = drop_lookup(drop, host, x, port)
+    who = host or ("X%s" % x)
+    if status == "no_device":
+        rep.error(tab, "%s: %s is not a device in Drop_List." % (ref, who))
+        return False
+    if status == "no_port":
+        rep.error(tab, "%s: port %s is not listed under %s in Drop_List." % (ref, port, dev))
+        return False
+    if not any(norm(DROP_IPDVS_LABEL) in norm(r["k"]) for r in rows):
+        rep.error(tab, "%s: %s port %s is '%s' in Drop_List column %s (row %s), expected %s."
+                  % (ref, dev, port, ", ".join(r["k"] or "blank" for r in rows), DROP_TYPE_COL,
+                     ", ".join(str(r["row"]) for r in rows), DROP_IPDVS_LABEL))
+        return False
+    return True
+
+
+def check_switch_table(g, tab, drop, rep):
+    """Locate 'Switch Name' / 'Switch Port' headers and verify each port is IOT_IPDVS."""
+    hdr = None
+    for r in range(1, min(g.nrows, SWITCH_TABLE_HEADER_ROWS) + 1):
+        nc = pc = None
+        for c, t in g.row_cells(r):
+            n = norm(t)
+            if "switchname" in n and nc is None:
+                nc = c
+            if "switchport" in n and pc is None:
+                pc = c
+        if nc and pc:
+            hdr = (r, nc, pc)
+            break
+    if not hdr:
+        return None
+    r0, nc, pc = hdr
+    n = bad = 0
+    for r in range(r0 + 1, g.nrows + 1):
+        name, port_raw = g.text(r, nc), g.text(r, pc)
+        if not name and not port_raw:
+            continue
+        if nc == pc:
+            sp = parse_switch_port(name)
+            host, x, port = sp["host"], sp["x"], sp["port"]
+        else:
+            m = HOST_RE.search(name)
+            host = m.group(1).upper() if m else None
+            x, port = parse_x(name), parse_port(port_raw)
+        if x is None and port is None:
+            continue
+        n += 1
+        ref = "Row %d ('%s' / '%s')" % (r, name, port_raw)
+        if x is None or port is None:
+            bad += 1
+            rep.error(tab, "%s: switch or port is missing / unreadable." % ref)
+        elif not _check_ipdvs_port(tab, ref, host, x, port, drop, rep):
+            bad += 1
+    if n and not bad:
+        rep.ok(tab, "All %d ports under 'Switch Name'/'Switch Port' (header row %d, columns %s/%s) "
+                    "are %s in Drop_List." % (n, r0, col_letter(nc), col_letter(pc), DROP_IPDVS_LABEL))
+    elif not n:
+        rep.warn(tab, "'Switch Name'/'Switch Port' header found on row %d but no rows beneath it." % r0)
+    return n
+
+
+def check_video(g, notes, drop, rep):
+    T = "Video Servers & Consoles"
+    ipdvs = [e for e in notes["entries"] if e["section"] == "IPDVS" and not e.get("skip")]
+    if not ipdvs:
+        rep.error(T, "Notes has no usable IPDVS section to compare against.")
+    items = []
+    for label, xc, pcell, pat in VIDEO_SPLIT_CELLS:
+        items.append((label, "%s/%s" % (xc, pcell), parse_x(g.at(xc)), parse_port(g.at(pcell)),
+                      "%s / %s" % (clean(g.at(xc)) or "blank", clean(g.at(pcell)) or "blank"), pat))
+    for label, cc, pat in VIDEO_COMBINED_CELLS:
+        sp = parse_switch_port(g.at(cc))
+        items.append((label, cc, sp["x"], sp["port"], sp["raw"] or "blank", pat))
+    matched = set()
+    good = 0
+    for label, where, x, port, raw, pat in items:
+        cands = [e for e in ipdvs if re.search(pat, e["component"].lower())]
+        blank = x is None and port is None
+        if not cands:
+            if not blank:
+                rep.warn(T, "%s (%s = %s): no matching component in Notes IPDVS (components there: %s)."
+                         % (label, where, raw, ", ".join(e["component"] for e in ipdvs) or "none"))
+            continue
+        for e in cands:
+            matched.add(id(e))
+        if blank or x is None or port is None:
+            rep.error(T, "%s (%s) is '%s' but Notes has %s." % (label, where, raw,
+                      " / ".join("X%s port %s" % (e["x"], e["port"]) for e in cands)))
+            continue
+        if any(e["x"] == x and e["port"] == port for e in cands):
+            good += 1
+        else:
+            rep.error(T, "%s (%s) is X%d port %d but Notes IPDVS '%s' says %s."
+                      % (label, where, x, port, cands[0]["component"],
+                         " / ".join("X%s port %s (%s)" % (e["x"], e["port"], e["cell"]) for e in cands)))
+        if VIDEO_FIXED_CELLS_MUST_BE_IPDVS:
+            _check_ipdvs_port(T, "%s (%s)" % (label, where), None, x, port, drop, rep)
+    for e in ipdvs:
+        if id(e) not in matched:
+            rep.warn(T, "Notes IPDVS component '%s' (X%s port %s) was not matched to any cell on this tab."
+                     % (e["component"], e["x"], e["port"]))
+    if good:
+        rep.ok(T, "%d of %d server/UPS/MVS cells match the Notes IPDVS section." % (good, len(items)))
+
+
+# =============================================================================
+# DRIVER
+# =============================================================================
+
+def run_checks(grids):
+    """grids: {key: Grid or None}  ->  (Report, parsed data dict)"""
+    rep = Report()
+    name = {k: v[0] for k, v in SHEETS.items()}
+    for k in SHEETS:
+        if grids.get(k) is None:
+            rep.error(name[k], "Tab not found in the workbook - its checks were skipped.")
+
+    def guard(tab, fn, *args):
+        try:
+            return fn(*args)
+        except Exception:
+            rep.error(tab, "Check stopped unexpectedly: %s" % traceback.format_exc().strip().splitlines()[-1])
+            rep.info(tab, traceback.format_exc())
+            return None
+
+    empty_notes = {"entries": [], "switches": [], "new": [], "old": [], "new_hosts": OrderedDict(),
+                   "old_hosts": OrderedDict(), "by_x": {}, "locs": OrderedDict()}
+    notes = (guard("Notes", parse_notes, grids["notes"], rep) if grids.get("notes") else None) or empty_notes
+    diagram = (guard("Network_Diagram", parse_diagram, grids["diagram"], rep)
+               if grids.get("diagram") else None) or {"instances": [], "hosts": OrderedDict()}
+    drop = (guard("Drop_List", parse_drop, grids["drop"], rep)
+            if grids.get("drop") else None) or {"devices": OrderedDict(), "by_x": {}}
+
+    have_notes, have_drop = bool(grids.get("notes")), bool(grids.get("drop"))
+    if have_notes and grids.get("diagram"):
+        guard("Network_Diagram", check_diagram_vs_notes, notes, diagram, rep)
+    if have_drop:
+        guard("Drop_List", check_drop, notes, diagram, drop, rep)
+    if grids.get("wired"):
+        guard(name["wired"], check_wired, grids["wired"], notes, diagram, drop, rep)
+    wdata = None
+    if grids.get("wdata"):
+        wdata = guard(name["wdata"], check_wireless_data, grids["wdata"], drop, rep)
+    if grids.get("wequip") and wdata:
+        guard(name["wequip"], check_wireless_equipment, grids["wequip"], wdata, rep)
+    if grids.get("pos"):
+        guard(name["pos"], check_pos, grids["pos"], notes, rep)
+    if grids.get("video"):
+        guard(name["video"], check_video, grids["video"], notes, drop, rep)
+    found_table = False
+    for k in SWITCH_TABLE_SHEETS:
+        if grids.get(k):
+            if guard(name[k], check_switch_table, grids[k], name[k], drop, rep) is not None:
+                found_table = True
+            elif k == "camera":
+                rep.warn(name[k], "No 'Switch Name' / 'Switch Port' header found in the first %d rows."
+                         % SWITCH_TABLE_HEADER_ROWS)
+    return rep, {"notes": notes, "diagram": diagram, "drop": drop, "wdata": wdata}
+
+
+def dump_parsed(parsed):
+    """Everything that was read, for eyeballing the parser against the workbook."""
+    out = ["", "#" * 78, "PARSED DATA", "#" * 78]
+    notes, diagram, drop = parsed["notes"], parsed["diagram"], parsed["drop"]
+    out.append("\n-- Notes: section call-outs (section | component | hostname | X# | port | VLAN)")
+    for e in notes["entries"]:
+        out.append("  %-18s | %-22s | %-32s | %-4s | %-4s | %s" % (
+            e["section"], e["component"], e["host"] or e["raw"],
+            "X%s" % e["x"] if e["x"] is not None else "-", e["port"] if e["port"] is not None else "-",
+            e["vlan_raw"]))
+    out.append("\n-- Notes: switches (location | old/new | label | hostname | model | status)")
+    for s in notes["switches"]:
+        out.append("  %-14s | %-3s | %-22s | %-32s | %-8s | %s" % (
+            s["loc"], s["kind"], s["label"], s["host"], s["model"], s["status"]))
+    out.append("\n-- Network_Diagram (hostname | cell | SFPs Used | Ports Used)")
+    for i in diagram["instances"]:
+        out.append("  %-32s | %-6s | %-5s | %s" % (i["host"], i["cell"], i["sfps"], i["ports"]))
+    out.append("\n-- Drop_List (hostname | header row | ports listed)")
+    for h, d in drop["devices"].items():
+        out.append("  %-32s | %-5d | %d" % (h, d["row"], len(d["ports"])))
+    return "\n".join(out)
+
+
+# ---- Excel (win32com) -------------------------------------------------------
+
+def _sheet_key(n):
+    return re.sub(r"[\s_]+", "", n).lower()
+
+
+def select_or_open_workbook():
+    pythoncom.CoInitialize()
+
+    workbook_choices = []
+
+    # Gather all open workbooks from all running Excel instances
+    for app in xw.apps:
+        for wb in app.books:
+            workbook_choices.append(wb)
+
+    # If there are open workbooks, let user choose one
+    if workbook_choices:
+        print("Select from open workbooks:")
+        for idx, wb in enumerate(workbook_choices, start=1):
+            try:
+                print(f"{idx}: {wb.name}")
+            except Exception:
+                print(f"{idx}: <Unknown Workbook>")
+
+        try:
+            choice = int(input("Enter number or 0 to open a new file: ").strip())
+            if 1 <= choice <= len(workbook_choices):
+                return workbook_choices[choice - 1].api
+        except Exception:
+            pass
+
+    # Fallback: use active Excel instance if one exists, otherwise create one
+    if xw.apps.count > 0:
+        app = xw.apps.active
+        if app is None:
+            app = list(xw.apps)[0]
+    else:
+        app = xw.App(visible=True, add_book=False)
+
+    file_path = app.api.GetOpenFilename(
+        FileFilter="Excel Files (*.xlsx;*.xlsm), *.xlsx;*.xlsm",
+        Title="Select an Excel workbook"
+    )
+
+    if not file_path or file_path is False:
+        return None
+
+    return app.books.open(file_path).api
+
+
+def read_grids(wb):
+    """wb: Excel Workbook COM object -> {key: Grid or None}.  Read only."""
+    grids = {k: None for k in SHEETS}
+    by_key = {_sheet_key(ws.Name): ws for ws in wb.Worksheets}
+    for key, names in SHEETS.items():
+        ws = None
+        for n in names:
+            ws = by_key.get(_sheet_key(n))
+            if ws is not None:
+                break
+        if ws is None:                                   # forgiving prefix match
+            for k, cand in by_key.items():
+                if k.startswith(_sheet_key(names[0])) or _sheet_key(names[0]).startswith(k):
+                    ws = cand
+                    break
+        if ws is None:
+            continue
+        ur = ws.UsedRange
+        last_r = ur.Row + ur.Rows.Count - 1
+        last_c = ur.Column + ur.Columns.Count - 1
+        vals = ws.Range(ws.Cells(1, 1), ws.Cells(last_r, last_c)).Value
+        if not isinstance(vals, tuple):
+            vals = ((vals,),)
+        grids[key] = Grid(ws.Name, vals)
+    return grids
+
+
+def report_path(wb):
+    """Beside the workbook when it lives on a local/network drive, otherwise
+    (unsaved, or opened from SharePoint/OneDrive by URL) the current folder."""
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    stem = os.path.splitext(str(wb.Name))[0]
+    folder = str(wb.Path or "")
+    if not folder or "://" in folder or not os.path.isdir(folder):
+        folder = os.getcwd()
+    return os.path.join(folder, "%s_validation_%s.txt" % (stem, stamp))
+
+
+def main():
+    wb = select_or_open_workbook()
+    if wb is None:
+        print("No workbook selected.")
+        return 2
+    print("Reading %s ..." % wb.Name)
+    grids = read_grids(wb)                 # the workbook is left open, untouched
+    rep, parsed = run_checks(grids)
+    order = [v[0] for v in SHEETS.values()]
+    text = "Workbook: %s\nChecked:  %s\n\n%s" % (
+        wb.FullName, datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), rep.render(order))
+    print(text)
+    out = report_path(wb)
+    try:
+        with open(out, "w", encoding="utf-8") as fh:
+            fh.write(text + "\n" + dump_parsed(parsed) + "\n")
+        print("\nReport saved to %s" % out)
+    except OSError as exc:
+        print("\nCould not save the report file: %s" % exc)
+    return 1 if rep.count("ERROR") else 0
+
+
+if __name__ == "__main__":
+    import pythoncom
+    import xlwings as xw
+    sys.exit(main())
