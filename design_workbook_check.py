@@ -582,7 +582,23 @@ def parse_notes_switches(g, start, end, rep):
                     host, hcol = m.group(1).upper(), c
                     break
         if not host:
-            mode = None                          # block finished
+            # A text-only row inside a block.  Normally it is the next closet's
+            # name (followed by 'Old Switches').  If switches follow it directly,
+            # the 'Old Switches' / 'New Switches' heading was overwritten.
+            title = g.text(r, mcol)
+            if not title or not _hosts_follow(g, r, mcol, end):
+                mode = None                      # block finished
+                continue
+            if mode == "old":
+                mode = "new"
+                rep.warn("Notes", "Row %d in %s reads '%s' where the 'New Switches' heading should be. "
+                                  "The switches below it were treated as New Switches - please fix the heading."
+                         % (r, loc or "the switch list", title))
+            else:
+                loc = title
+                rep.warn("Notes", "Row %d: '%s' is followed by switches without an 'Old Switches' / "
+                                  "'New Switches' heading. They were treated as New Switches for '%s'."
+                         % (r, title, title))
             continue
         if hcol != mcol + 1:
             rep.warn("Notes", "Row %d: hostname %s is in column %s; expected column %s."
@@ -593,6 +609,18 @@ def parse_notes_switches(g, start, end, rep):
             "x": host_x(host), "model": host_model(host), "room": host_room(host),
         })
     return switches
+
+
+def _hosts_follow(g, r, mcol, end):
+    """True when the next non-empty row after r holds a hostname (not a heading)."""
+    for rr in range(r + 1, min(end, r + 3) + 1):
+        cells = g.row_cells(rr)
+        if not cells:
+            continue
+        if any(norm(t) in ("oldswitches", "oldswitch", "newswitches", "newswitch") for _, t in cells):
+            return False
+        return any(c > mcol and HOST_RE.search(t) for c, t in cells)
+    return False
 
 
 def loc_type(name):
