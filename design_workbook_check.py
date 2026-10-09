@@ -722,7 +722,7 @@ def parse_diagram(g, rep):
         rep.warn(T, "Hidden data detected underneath %d merged cell(s). Only the visible (first) "
                     "value was used; the hidden values were ignored. To see the hidden data, select "
                     "the merged cell and unmerge it (Home > Merge & Center).\n%s"
-                 % (len(g.hidden), "\n".join("          %s  <- hidden underneath: %s" % p for p in g.hidden)))
+                 % (len(g.hidden), "\n".join("          %s  - hidden underneath: %s" % p for p in g.hidden)))
     instances = []
     claimed = {}
     for r in range(DIAGRAM_FIRST_ROW, g.nrows + 1):
@@ -1140,6 +1140,19 @@ def check_wired(g, notes, diagram, drop, rep):
         if got != exp:
             rep.error(T, "SFP-10/25G-CSR-S=: expected %d (%d %s excluding X0, x 2 + 8), found %s (%s)."
                       % (exp, sfp_model, ACCESS_MODEL, got, "; ".join(de(x) for x in sfp)))
+
+    # ---- anything else with a quantity (equipment this script has no rule for) ----
+    def is_qty(v):
+        n = num(v)
+        return isinstance(n, (int, float)) and n != 0
+
+    others = [x for x in rows if x["kind"] is None and (is_qty(x["d"]) or is_qty(x["e"]))]
+    if others:
+        rep.warn(T, "%d other item(s) have a quantity in column %s or %s and are not covered by a check:\n%s"
+                 % (len(others), WIRED_QTY_COLS[0], WIRED_QTY_COLS[1],
+                    "\n".join("          row %d: %s - %s (D=%s, E=%s)"
+                               % (x["row"], x["model"] or "(no part #)", x["desc"] or "(no description)",
+                                  clean(x["d"]) or "blank", clean(x["e"]) or "blank") for x in others)))
 
     # ---- MDF-only items entered against another room -----------------------
     if rooms_ok and mdf_rows is not rows:
