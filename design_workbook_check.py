@@ -81,8 +81,10 @@ DROP_TYPE_COL = "K"              # where IOT_IPDVS is expected
 DROP_WIRELESS_COL = "P"          # compared with Wireless_Design_Data column D
 DROP_IPDVS_LABEL = "IOT_IPDVS"
 DROP_HEADER_ROW = 3              # column titles, used in messages
-# A Drop_List port is a POS port when column P (Notes) is one of these.
-DROP_POS_LABELS = ["POS", "Dietician", "Dietitian", "Kiosk"]
+# A Drop_List port is recognised as a POS port when column P (Notes) contains
+# one of these words.  Ports that Notes or the POS tab already call out are
+# matched on switch + port (and VLAN) instead, whatever the label says.
+DROP_POS_LABELS = ["POS", "Dietician", "Dietitian", "Diet", "Kiosk"]
 # Uplink ports on the X1 core that feed access switches (one per switch).
 X1_UPLINK_PORTS = (1, 36)
 
@@ -833,12 +835,12 @@ def parse_drop(g, rep):
                 rep.error(T, "%s port %d is listed %d times (rows %s)."
                           % (h, port, len(simple), ", ".join(str(x["row"]) for x in simple)))
     # POS ports (by the label in column P) and the X1 core's access uplinks
-    pos_labels = {norm(l) for l in DROP_POS_LABELS}
+    pos_re = re.compile(r"(?<![A-Za-z])(%s)(?![A-Za-z])" % "|".join(re.escape(l) for l in DROP_POS_LABELS), re.I)
     pos = {}
     for h, d in devices.items():
         for port, rows in d["ports"].items():
             for x in rows:
-                if x["simple"] and norm(x["p"]) in pos_labels and d["x"] is not None:
+                if x["simple"] and pos_re.search(x["p"]) and d["x"] is not None:
                     pos[(d["x"], port)] = x
     uplinks = None
     core = [d for d in devices.values() if d["x"] == 1]
@@ -1273,9 +1275,19 @@ def check_pos(g, notes, drop, rep):
             rep.error(T, "X%d port %d is listed twice on the POS tab (rows %d and %d)."
                       % (x, port, tab[(x, port)], r))
         tab[(x, port)] = r
-    in_notes = {(e["x"], e["port"]) for e in notes["entries"]
-                if e["section"] == "POS" and not e.get("skip")}
-    sources = [("Notes", in_notes), ("POS tab", set(tab)), ("Drop_List", set(drop.get("pos", {})))]
+    pos_entries = [e for e in notes["entries"] if e["section"] == "POS" and not e.get("skip")]
+    in_notes = {(e["x"], e["port"]) for e in pos_entries}
+    pos_vlans = {e["vlan"] for e in pos_entries if e["vlan"]}
+
+    # Drop_List: ports labelled as POS, plus any port Notes / the POS tab calls
+    # out that exists under that switch (Notes ports: any VLAN - a wrong VLAN is
+    # reported on the Drop_List tab; POS-tab-only ports: must be on a POS VLAN).
+    in_drop = set(drop.get("pos", {}))
+    for key in in_notes | set(tab):
+        status, _, rows, _ = drop_lookup(drop, None, key[0], key[1])
+        if status == "ok" and (key in in_notes or any(r["vlan"] in pos_vlans for r in rows)):
+            in_drop.add(key)
+    sources = [("Notes", in_notes), ("POS tab", set(tab)), ("Drop_List", in_drop)]
     for key in sorted(set().union(*(s for _, s in sources))):
         missing = [n for n, s in sources if key not in s]
         if missing:
