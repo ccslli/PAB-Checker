@@ -81,6 +81,9 @@ DROP_VLAN_COL = "I"
 DROP_TYPE_COL = "K"              # where IOT_IPDVS is expected
 DROP_WIRELESS_COL = "P"          # compared with Wireless_Design_Data column D
 DROP_IPDVS_LABEL = "IOT_IPDVS"
+# IOT_IPDVS ports whose column P (Notes) contains one of these words are not
+# cameras, so they are not expected on the Camera Information tab.
+DROP_IPDVS_NOT_CAMERA = ["Server", "UPS", "MVS", "Safer Access"]
 DROP_HEADER_ROW = 3              # column titles, used in messages
 # A Drop_List port is recognised as a POS port when column P (Notes) contains
 # one of these words.  Ports that Notes or the POS tab already call out are
@@ -1333,13 +1336,14 @@ def _switch_table_headers(g):
     return None
 
 
-def check_switch_table(g, tab, drop, rep):
+def check_switch_table(g, tab, drop, rep, covered):
     """Verify each port under 'Switch Name' / 'Switch Port' is IOT_IPDVS in Drop_List."""
     hdr = _switch_table_headers(g)
     if not hdr:
         return None
     r0, pairs = hdr
     n = 0
+    seen = {}
     for nc, pc in pairs:
         for r in range(r0 + 1, g.nrows + 1):
             name, port_raw = g.text(r, nc), g.text(r, pc)
@@ -1356,8 +1360,12 @@ def check_switch_table(g, tab, drop, rep):
             ref = "Row %d (%s / %s)" % (r, name or "blank", port_raw or "blank")
             if x is None or port is None:
                 rep.error(tab, "%s: switch or port is missing / unreadable." % ref)
-            else:
-                _check_ipdvs_port(tab, ref, host, x, port, drop, rep)
+                continue
+            if (x, port) in seen:
+                rep.error(tab, "%s: X%d port %d is already used on row %d." % (ref, x, port, seen[(x, port)]))
+            seen[(x, port)] = r
+            covered.add((x, port))
+            _check_ipdvs_port(tab, ref, host, x, port, drop, rep)
     if not n:
         rep.warn(tab, "'Switch Name' / 'Switch Port' header found (row %d, columns %s) but those "
                       "columns are empty beneath it."
@@ -1365,7 +1373,22 @@ def check_switch_table(g, tab, drop, rep):
     return n
 
 
-def check_video(g, notes, drop, rep):
+def check_ipdvs_coverage(tab, notes, drop, covered, rep):
+    """Every IOT_IPDVS camera port in Drop_List must appear on the camera tab."""
+    known = set(covered) | {(e["x"], e["port"]) for e in notes["entries"] if not e.get("skip")}
+    skip = [norm(w) for w in DROP_IPDVS_NOT_CAMERA]
+    for h, d in drop["devices"].items():
+        for port, rows in sorted(d["ports"].items()):
+            for x in rows:
+                if not x["simple"] or norm(DROP_IPDVS_LABEL) not in norm(x["k"]):
+                    continue
+                if (d["x"], port) in known or any(w in norm(x["p"]) for w in skip):
+                    continue
+                rep.error(tab, "%s port %d is %s in Drop_List (row %d, %s) but is not listed in %s."
+                          % (h, port, DROP_IPDVS_LABEL, x["row"], x["p"] or "no description", tab))
+
+
+def check_video(g, notes, drop, rep, covered):
     T = "Video Servers & Consoles"
     ipdvs = [e for e in notes["entries"] if e["section"] == "IPDVS" and not e.get("skip")]
     if not ipdvs:
@@ -1396,6 +1419,7 @@ def check_video(g, notes, drop, rep):
             rep.error(T, "%s is X%d port %d but Notes IPDVS '%s' says %s."
                       % (label, x, port, cands[0]["component"],
                          " / ".join("X%s port %s" % (e["x"], e["port"]) for e in cands)))
+        covered.add((x, port))
         if VIDEO_FIXED_CELLS_MUST_BE_IPDVS:
             _check_ipdvs_port(T, label, None, x, port, drop, rep)
     for e in ipdvs:
@@ -1445,16 +1469,20 @@ def run_checks(grids):
         guard(name["wequip"], check_wireless_equipment, grids["wequip"], wdata, rep)
     if grids.get("pos"):
         guard(name["pos"], check_pos, grids["pos"], notes, drop, rep)
+    covered = set()                    # IPDVS ports accounted for on the video / camera tabs
     if grids.get("video"):
-        guard(name["video"], check_video, grids["video"], notes, drop, rep)
-    found_table = False
+        guard(name["video"], check_video, grids["video"], notes, drop, rep, covered)
+    camera_table = False
     for k in SWITCH_TABLE_SHEETS:
         if grids.get(k):
-            if guard(name[k], check_switch_table, grids[k], name[k], drop, rep) is not None:
-                found_table = True
-            elif k == "camera":
-                rep.warn(name[k], "No 'Switch Name' / 'Switch Port' header found in the first %d rows."
-                         % SWITCH_TABLE_HEADER_ROWS)
+            found = guard(name[k], check_switch_table, grids[k], name[k], drop, rep, covered)
+            if k == "camera":
+                camera_table = found is not None
+                if not camera_table:
+                    rep.warn(name[k], "No 'Switch Name' / 'Switch Port' header found in the first %d rows."
+                             % SWITCH_TABLE_HEADER_ROWS)
+    if camera_table and have_drop:
+        guard(name["camera"], check_ipdvs_coverage, name["camera"], notes, drop, covered, rep)
     return rep, {"notes": notes, "diagram": diagram, "drop": drop, "wdata": wdata}
 
 
