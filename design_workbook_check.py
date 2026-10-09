@@ -1552,37 +1552,55 @@ def _drop_values_hidden_by_merges(ws, vals):
 
 # ---- DOE QA script hand-off --------------------------------------------------
 
-def load_qa_folder():
+def load_qa_settings():
+    """-> (folder, script file name); the name falls back to QA_SCRIPT_NAME."""
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
-            return json.load(fh).get("qa_folder") or ""
+            data = json.load(fh)
+        return data.get("qa_folder") or "", data.get("qa_script") or QA_SCRIPT_NAME
     except (OSError, ValueError, AttributeError):
-        return ""
+        return "", QA_SCRIPT_NAME
 
 
-def save_qa_folder(folder):
+def save_qa_settings(folder, script_name):
     try:
         with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:
-            json.dump({"qa_folder": folder}, fh, indent=2)
+            json.dump({"qa_folder": folder, "qa_script": script_name}, fh, indent=2)
     except OSError as exc:
-        print("Could not save the folder location (%s); you will be asked again next time." % exc)
+        print("Could not save the script location (%s); you will be asked again next time." % exc)
+
+
+def _dialog(kind, **options):
+    import tkinter
+    from tkinter import filedialog
+    root = tkinter.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        return getattr(filedialog, kind)(parent=root, **options) or ""
+    finally:
+        root.destroy()
 
 
 def pick_folder():
     """Folder picker; returns '' when the user cancels or closes it."""
     try:
-        import tkinter
-        from tkinter import filedialog
-        root = tkinter.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        folder = filedialog.askdirectory(
-            parent=root, title="Select the folder containing %s" % QA_SCRIPT_NAME)
-        root.destroy()
-        return folder or ""
+        return _dialog("askdirectory", title="Select the folder containing the DOE QA script")
     except Exception:
         try:
             return input("Type the folder path (or press Enter to cancel): ").strip().strip('"')
+        except EOFError:
+            return ""
+
+
+def pick_script(folder):
+    """File picker opened in `folder`; returns '' when the user cancels."""
+    try:
+        return _dialog("askopenfilename", title="Select the DOE QA Python script",
+                       initialdir=folder, filetypes=[("Python scripts", "*.py")])
+    except Exception:
+        try:
+            return input("Type the full path of the .py file (or press Enter to cancel): ").strip().strip('"')
         except EOFError:
             return ""
 
@@ -1594,30 +1612,38 @@ def ask(prompt):
         return ""
 
 
+def locate_script_in(folder, expected):
+    """The expected file is missing from `folder`: offer to pick the script
+    (its name changes when it is updated).  Returns the file name or ''."""
+    print("%s was not found in:\n  %s" % (expected, folder))
+    if ask("Do you want to locate the Python script in this folder? (y = yes, Enter = no): ") != "y":
+        return ""
+    path = pick_script(folder)
+    if not path or not os.path.isfile(path):
+        return ""
+    return os.path.normpath(path)
+
+
 def find_qa_script():
     """Return the full path of the QA script, or None when the user gives up."""
-    folder = load_qa_folder()
+    folder, name = load_qa_settings()
     if folder and not os.path.isdir(folder):
         print("The saved DOE QA script folder is no longer accessible:\n  %s\nPlease select it again." % folder)
-        folder = ""
-    elif folder and not os.path.isfile(os.path.join(folder, QA_SCRIPT_NAME)):
-        print("%s is no longer in the saved folder:\n  %s\nPlease select the folder again."
-              % (QA_SCRIPT_NAME, folder))
         folder = ""
     while True:
         if not folder:
             print("Select the folder with the DOE QA script...")
             folder = pick_folder()
-            if not folder:
-                print("DOE QA script aborted.")
-            elif not os.path.isfile(os.path.join(folder, QA_SCRIPT_NAME)):
-                print("%s was not found in:\n  %s" % (QA_SCRIPT_NAME, folder))
-                folder = ""
-            else:
-                folder = os.path.normpath(folder)
-                save_qa_folder(folder)
+            folder = os.path.normpath(folder) if folder else ""
         if folder:
-            return os.path.join(folder, QA_SCRIPT_NAME)
+            path = os.path.join(folder, name)
+            if not os.path.isfile(path):
+                path = locate_script_in(folder, name)
+            if path:
+                save_qa_settings(os.path.dirname(path), os.path.basename(path))
+                return path
+            folder = ""
+        print("DOE QA script aborted.")
         if ask("Do you want to try again or exit? (y = try again, Enter = exit): ") != "y":
             return None
 
