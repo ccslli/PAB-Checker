@@ -34,7 +34,8 @@ from collections import Counter, OrderedDict, defaultdict
 # =============================================================================
 
 # Tab names (first name is the display name; others are accepted alternates).
-# Matching ignores case, spaces and underscores.
+# Only visible tabs are used.  Matching ignores case, spaces and punctuation,
+# and falls back to a visible tab with a similar name.
 SHEETS = OrderedDict([
     ("notes",   ["Notes"]),
     ("diagram", ["Network_Diagram"]),
@@ -1464,9 +1465,12 @@ def run_checks(grids):
     """grids: {key: Grid or None}  ->  (Report, parsed data dict)"""
     rep = Report()
     name = {k: v[0] for k, v in SHEETS.items()}
+    info = grids.get("_info") or {}
     for k in SHEETS:
         if grids.get(k) is None:
-            rep.error(name[k], "Tab not found in the workbook - its checks were skipped.")
+            rep.error(name[k], info.get(k) or "Tab not found in the workbook - its checks were skipped.")
+        elif info.get(k):
+            rep.note(name[k], info[k])
 
     def guard(tab, fn, *args):
         try:
@@ -1517,69 +1521,62 @@ def run_checks(grids):
 # ---- Excel (win32com) -------------------------------------------------------
 
 def _sheet_key(n):
-    return re.sub(r"[\s_]+", "", n).lower()
+    return re.sub(r"[^a-z0-9]", "", n.lower().replace("&", "and"))
 
 
-def select_or_open_workbook():
-    pythoncom.CoInitialize()
+def resolve_sheets(sheets):
+    """sheets: [(tab name, is_visible)] in workbook order.
+    Only VISIBLE tabs are used.  Each expected tab is matched by exact name
+    first, then by a similar name (e.g. 'Video Servers and Consoles (IP)').
+    Returns ({key: tab name or None}, {key: message about the choice})."""
+    visible = [n for n, v in sheets if v]
+    hidden = [n for n, v in sheets if not v]
+    chosen, info, claimed = {}, {}, set()
 
-    workbook_choices = []
+    def wanted(key):
+        return [_sheet_key(n) for n in SHEETS[key]]
 
-    # Gather all open workbooks from all running Excel instances
-    for app in xw.apps:
-        for wb in app.books:
-            workbook_choices.append(wb)
-
-    # If there are open workbooks, let user choose one
-    if workbook_choices:
-        print("Select from open workbooks:")
-        for idx, wb in enumerate(workbook_choices, start=1):
-            try:
-                print(f"{idx}: {wb.name}")
-            except Exception:
-                print(f"{idx}: <Unknown Workbook>")
-
-        try:
-            choice = int(input("Enter number or 0 to open a new file: ").strip())
-            if 1 <= choice <= len(workbook_choices):
-                return workbook_choices[choice - 1].api
-        except Exception:
-            pass
-
-    # Fallback: use active Excel instance if one exists, otherwise create one
-    if xw.apps.count > 0:
-        app = xw.apps.active
-        if app is None:
-            app = list(xw.apps)[0]
-    else:
-        app = xw.App(visible=True, add_book=False)
-
-    file_path = app.api.GetOpenFilename(
-        FileFilter="Excel Files (*.xlsx;*.xlsm), *.xlsx;*.xlsm",
-        Title="Select an Excel workbook"
-    )
-
-    if not file_path or file_path is False:
-        return None
-
-    return app.books.open(file_path).api
+    for key in SHEETS:                                   # 1. exact name
+        for n in visible:
+            if n not in claimed and _sheet_key(n) in wanted(key):
+                chosen[key] = n
+                claimed.add(n)
+                break
+    for key in SHEETS:                                   # 2. similar name
+        if key in chosen:
+            continue
+        best, best_score = None, 0.0
+        for n in visible:
+            if n in claimed:
+                continue
+            k = _sheet_key(n)
+            for w in wanted(key):
+                score = 1.0 if (k.startswith(w) or w.startswith(k)) else \
+                    difflib.SequenceMatcher(None, k, w).ratio()
+                if score > best_score:
+                    best, best_score = n, score
+        hid = [n for n in hidden if _sheet_key(n) in wanted(key)]
+        if best is not None and best_score >= 0.85:
+            chosen[key] = best
+            claimed.add(best)
+            info[key] = "Using visible tab '%s'%s." % (
+                best, " (the tab '%s' is hidden and was ignored)" % hid[0] if hid else "")
+        else:
+            chosen[key] = None
+            if hid:
+                info[key] = ("The tab '%s' is hidden and no visible tab with a similar name was "
+                             "found - its checks were skipped." % hid[0])
+    return chosen, info
 
 
 def read_grids(wb):
     """wb: Excel Workbook COM object -> {key: Grid or None}.  Read only."""
     grids = {k: None for k in SHEETS}
-    by_key = {_sheet_key(ws.Name): ws for ws in wb.Worksheets}
-    for key, names in SHEETS.items():
-        ws = None
-        for n in names:
-            ws = by_key.get(_sheet_key(n))
-            if ws is not None:
-                break
-        if ws is None:                                   # forgiving prefix match
-            for k, cand in by_key.items():
-                if k.startswith(_sheet_key(names[0])) or _sheet_key(names[0]).startswith(k):
-                    ws = cand
-                    break
+    by_name = {ws.Name: ws for ws in wb.Worksheets}
+    chosen, info = resolve_sheets([(ws.Name, ws.Visible == -1) for ws in wb.Worksheets])
+    grids["_info"] = info
+    for key in SHEETS:
+        ws = by_name.get(chosen.get(key))
         if ws is None:
             continue
         ur = ws.UsedRange
