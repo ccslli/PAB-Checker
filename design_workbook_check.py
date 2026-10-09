@@ -1524,6 +1524,51 @@ def _sheet_key(n):
     return re.sub(r"[^a-z0-9]", "", n.lower().replace("&", "and"))
 
 
+def select_or_open_workbook():
+    pythoncom.CoInitialize()
+
+    workbook_choices = []
+
+    # Gather all open workbooks from all running Excel instances
+    for app in xw.apps:
+        for wb in app.books:
+            workbook_choices.append(wb)
+
+    # If there are open workbooks, let user choose one
+    if workbook_choices:
+        print("Select from open workbooks:")
+        for idx, wb in enumerate(workbook_choices, start=1):
+            try:
+                print(f"{idx}: {wb.name}")
+            except Exception:
+                print(f"{idx}: <Unknown Workbook>")
+
+        try:
+            choice = int(input("Enter number or 0 to open a new file: ").strip())
+            if 1 <= choice <= len(workbook_choices):
+                return workbook_choices[choice - 1].api
+        except Exception:
+            pass
+
+    # Fallback: use active Excel instance if one exists, otherwise create one
+    if xw.apps.count > 0:
+        app = xw.apps.active
+        if app is None:
+            app = list(xw.apps)[0]
+    else:
+        app = xw.App(visible=True, add_book=False)
+
+    file_path = app.api.GetOpenFilename(
+        FileFilter="Excel Files (*.xlsx;*.xlsm), *.xlsx;*.xlsm",
+        Title="Select an Excel workbook"
+    )
+
+    if not file_path or file_path is False:
+        return None
+
+    return app.books.open(file_path).api
+
+
 def resolve_sheets(sheets):
     """sheets: [(tab name, is_visible)] in workbook order.
     Only VISIBLE tabs are used.  Each expected tab is matched by exact name
