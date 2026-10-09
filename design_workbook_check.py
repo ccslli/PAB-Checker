@@ -10,7 +10,8 @@ Usage (Windows, Excel installed, `pip install pywin32 xlwings`):
 
 Pick one of the workbooks already open in Excel, or enter 0 to browse for a
 file.  The workbook is only read, never modified, and is left open.  Results
-are printed in the terminal; press Enter to close when done.
+are printed in the terminal.  Afterwards you are asked whether to run the DOE
+QA script; its folder is asked for once and remembered for later runs.
 
 Everything likely to need adjusting (sheet names, column letters, equipment
 rules, AP model mapping, fixed cells) is in the CONFIGURATION block below.
@@ -18,9 +19,11 @@ rules, AP model mapping, fixed cells) is in the CONFIGURATION block below.
 
 import datetime
 import difflib
+import json
 import math
 import os
 import re
+import subprocess
 import sys
 import traceback
 from collections import Counter, OrderedDict, defaultdict
@@ -149,6 +152,11 @@ SWITCH_TABLE_SHEETS = ["video", "camera"]
 SWITCH_TABLE_HEADER_ROWS = 40    # how far down to look for the header
 # Also require the fixed Video cells above to be IOT_IPDVS in Drop_List?
 VIDEO_FIXED_CELLS_MUST_BE_IPDVS = True
+
+# ---- DOE QA script (offered after the checks) -------------------------------
+QA_SCRIPT_NAME = "QA_Automation_03_17v3.py"
+# Where the chosen QA folder is remembered between runs
+SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".pab_checker_settings.json")
 
 # =============================================================================
 # GENERIC HELPERS
@@ -1542,6 +1550,89 @@ def _drop_values_hidden_by_merges(ws, vals):
     return rows, hidden
 
 
+# ---- DOE QA script hand-off --------------------------------------------------
+
+def load_qa_folder():
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
+            return json.load(fh).get("qa_folder") or ""
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def save_qa_folder(folder):
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:
+            json.dump({"qa_folder": folder}, fh, indent=2)
+    except OSError as exc:
+        print("Could not save the folder location (%s); you will be asked again next time." % exc)
+
+
+def pick_folder():
+    """Folder picker; returns '' when the user cancels or closes it."""
+    try:
+        import tkinter
+        from tkinter import filedialog
+        root = tkinter.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        folder = filedialog.askdirectory(
+            parent=root, title="Select the folder containing %s" % QA_SCRIPT_NAME)
+        root.destroy()
+        return folder or ""
+    except Exception:
+        try:
+            return input("Type the folder path (or press Enter to cancel): ").strip().strip('"')
+        except EOFError:
+            return ""
+
+
+def ask(prompt):
+    try:
+        return input(prompt).strip().lower()
+    except EOFError:
+        return ""
+
+
+def find_qa_script():
+    """Return the full path of the QA script, or None when the user gives up."""
+    folder = load_qa_folder()
+    if folder and not os.path.isdir(folder):
+        print("The saved DOE QA script folder is no longer accessible:\n  %s\nPlease select it again." % folder)
+        folder = ""
+    elif folder and not os.path.isfile(os.path.join(folder, QA_SCRIPT_NAME)):
+        print("%s is no longer in the saved folder:\n  %s\nPlease select the folder again."
+              % (QA_SCRIPT_NAME, folder))
+        folder = ""
+    while True:
+        if not folder:
+            print("Select the folder with the DOE QA script...")
+            folder = pick_folder()
+            if not folder:
+                print("DOE QA script aborted.")
+            elif not os.path.isfile(os.path.join(folder, QA_SCRIPT_NAME)):
+                print("%s was not found in:\n  %s" % (QA_SCRIPT_NAME, folder))
+                folder = ""
+            else:
+                folder = os.path.normpath(folder)
+                save_qa_folder(folder)
+        if folder:
+            return os.path.join(folder, QA_SCRIPT_NAME)
+        if ask("Do you want to try again or exit? (y = try again, Enter = exit): ") != "y":
+            return None
+
+
+def offer_qa_script():
+    if ask("\nDo you want to run the DOE QA script? (y = yes, Enter = exit): ") != "y":
+        return
+    script = find_qa_script()
+    if not script:
+        return
+    print("\nRunning %s ...\n" % script)
+    # same terminal, same Python; this script ends when the QA script ends
+    subprocess.call([sys.executable, script], cwd=os.path.dirname(script))
+
+
 def main():
     try:
         wb = select_or_open_workbook()
@@ -1555,10 +1646,7 @@ def main():
             print(rep.render([v[0] for v in SHEETS.values()]))
     except Exception:
         traceback.print_exc()
-    try:
-        input("\nPress Enter to exit...")
-    except EOFError:
-        pass
+    offer_qa_script()
     return 0
 
 
