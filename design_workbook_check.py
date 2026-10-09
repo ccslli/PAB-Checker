@@ -10,8 +10,9 @@ Usage (Windows, Excel installed, `pip install pywin32 xlwings`):
 
 Pick one of the workbooks already open in Excel, or enter 0 to browse for a
 file.  The workbook is only read, never modified, and is left open.  Results
-are printed in the terminal.  Afterwards you are asked whether to run the DOE
-QA script; its folder is asked for once and remembered for later runs.
+are printed in the terminal.  Afterwards you can re-run the checks on the same
+workbook (r), run the DOE QA script (q) or exit (Enter).  The QA script's
+folder is asked for once and remembered for later runs.
 
 Everything likely to need adjusting (sheet names, column letters, equipment
 rules, AP model mapping, fixed cells) is in the CONFIGURATION block below.
@@ -1660,9 +1661,7 @@ def find_qa_script():
             return None
 
 
-def offer_qa_script():
-    if ask("\nDo you want to run the DOE QA script? (y = yes, Enter = exit): ") != "y":
-        return
+def run_qa_script():
     script = find_qa_script()
     if not script:
         return
@@ -1671,21 +1670,43 @@ def offer_qa_script():
     subprocess.call([sys.executable, script], cwd=os.path.dirname(script))
 
 
+def check_workbook(wb):
+    print("\nReading %s ...\n" % wb.Name)
+    grids = read_grids(wb)                 # the workbook is left open, untouched
+    rep, _ = run_checks(grids)
+    print("Workbook: %s" % wb.Name)
+    print(rep.render([v[0] for v in SHEETS.values()]))
+
+
 def main():
+    wb = None
     try:
         wb = select_or_open_workbook()
         if wb is None:
             print("No workbook selected.")
         else:
-            print("\nReading %s ...\n" % wb.Name)
-            grids = read_grids(wb)             # the workbook is left open, untouched
-            rep, _ = run_checks(grids)
-            print("Workbook: %s" % wb.Name)
-            print(rep.render([v[0] for v in SHEETS.values()]))
+            check_workbook(wb)
     except Exception:
         traceback.print_exc()
-    offer_qa_script()
-    return 0
+    while True:
+        choice = ask("\nAre all the errors fixed? Do you want to re-run PAB checker or run DOE QA script? "
+                     "(r = re-run PAB checker, q = DOE QA script, Enter = exit): ")
+        if choice == "r":
+            try:
+                if wb is None:
+                    wb = select_or_open_workbook()
+                if wb is None:
+                    print("No workbook selected.")
+                else:
+                    check_workbook(wb)         # same workbook, read again as it is now
+            except Exception:
+                traceback.print_exc()
+                wb = None                      # e.g. workbook was closed - ask again next time
+        elif choice == "q":
+            run_qa_script()
+            return 0
+        else:
+            return 0
 
 
 if __name__ == "__main__":
