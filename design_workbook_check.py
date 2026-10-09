@@ -78,6 +78,10 @@ DROP_TYPE_COL = "K"              # where IOT_IPDVS is expected
 DROP_WIRELESS_COL = "P"          # compared with Wireless_Design_Data column D
 DROP_IPDVS_LABEL = "IOT_IPDVS"
 DROP_HEADER_ROW = 3              # column titles, used in messages
+# A Drop_List port is a POS port when column P (Notes) is one of these.
+DROP_POS_LABELS = ["POS", "Dietician", "Dietitian", "Kiosk"]
+# Uplink ports on the X1 core that feed access switches (one per switch).
+X1_UPLINK_PORTS = (1, 36)
 
 # ---- Wired_Equipment_List ---------------------------------------------------
 WIRED_FIRST_ROW = 4
@@ -820,7 +824,24 @@ def parse_drop(g, rep):
             if len(simple) > 1:
                 rep.error(T, "%s port %d is listed %d times (rows %s)."
                           % (h, port, len(simple), ", ".join(str(x["row"]) for x in simple)))
-    return {"devices": devices, "by_x": by_x,
+    # POS ports (by the label in column P) and the X1 core's access uplinks
+    pos_labels = {norm(l) for l in DROP_POS_LABELS}
+    pos = {}
+    for h, d in devices.items():
+        for port, rows in d["ports"].items():
+            for x in rows:
+                if x["simple"] and norm(x["p"]) in pos_labels and d["x"] is not None:
+                    pos[(d["x"], port)] = x
+    uplinks = None
+    core = [d for d in devices.values() if d["x"] == 1]
+    if core:
+        uplinks = []
+        for port, rows in sorted(core[0]["ports"].items()):
+            if X1_UPLINK_PORTS[0] <= port <= X1_UPLINK_PORTS[1]:
+                used = [x for x in rows if x["p"] and norm(x["p"]) != "reserved"]
+                if used:
+                    uplinks.append((port, used[0]["p"]))
+    return {"devices": devices, "by_x": by_x, "pos": pos, "uplinks": uplinks,
             "p_header": g.text(DROP_HEADER_ROW, wc) or "column %s" % DROP_WIRELESS_COL}
 
 
@@ -859,6 +880,19 @@ def check_drop(notes, diagram, drop, rep):
             hint = close_match(h, wanted)
             rep.error(T, "%s (row %d) is not in Notes or Network_Diagram%s."
                       % (h, d["row"], " - possible typo of %s" % hint if hint else ""))
+
+    # X1 uplinks: one per access switch, each naming a real switch
+    if drop.get("uplinks") is not None and notes["new_hosts"]:
+        n_notes = sum(1 for s in notes["new_hosts"].values() if is_access(s))
+        if len(drop["uplinks"]) != n_notes:
+            rep.error(T, "Access switches: Notes lists %d, but %d uplink port(s) are in use on X1 (ports %d-%d)."
+                      % (n_notes, len(drop["uplinks"]), X1_UPLINK_PORTS[0], X1_UPLINK_PORTS[1]))
+        for port, text in drop["uplinks"]:
+            m = HOST_RE.search(text)
+            if m and m.group(1).upper() not in notes["new_hosts"]:
+                hint = close_match(m.group(1).upper(), notes["new_hosts"])
+                rep.warn(T, "X1 port %d description '%s' does not match a switch in Notes%s."
+                         % (port, text, " - possible typo of %s" % hint if hint else ""))
 
     # Notes Section 1 patching: port present + VLAN correct
     for e in notes["entries"]:
@@ -981,6 +1015,9 @@ def check_wired(g, notes, diagram, drop, rep):
 
     all_new = list(notes["new_hosts"].values())
     total_access = sum(1 for s in all_new if is_access(s))
+    if drop.get("uplinks") is not None:          # Drop_List X1 uplinks are the reference
+        total_access = len(drop["uplinks"])
+    sfp_model = sum(1 for s in all_new if is_new_access_model(s) and s["x"] != 0)   # X0 not counted
     total_model = sum(1 for s in all_new if is_new_access_model(s))
     mdf_model = sum(1 for s in (locs[mdf]["switches"] if mdf else []) if is_new_access_model(s))
 
@@ -1095,14 +1132,14 @@ def check_wired(g, notes, diagram, drop, rep):
 
     # ---- SFPs --------------------------------------------------------------
     sfp = pick("sfp", pool=mdf_rows)
-    exp = total_model * 2 + 8
+    exp = sfp_model * 2 + 8
     if not sfp:
         rep.error(T, "SFP-10/25G-CSR-S= line not found.")
     else:
         got = sum(x["qty"] for x in sfp)
         if got != exp:
-            rep.error(T, "SFP-10/25G-CSR-S=: expected %d (%d %s x 2 + 8), found %s (%s)."
-                      % (exp, total_model, ACCESS_MODEL, got, "; ".join(de(x) for x in sfp)))
+            rep.error(T, "SFP-10/25G-CSR-S=: expected %d (%d %s excluding X0, x 2 + 8), found %s (%s)."
+                      % (exp, sfp_model, ACCESS_MODEL, got, "; ".join(de(x) for x in sfp)))
 
     # ---- MDF-only items entered against another room -----------------------
     if rooms_ok and mdf_rows is not rows:
@@ -1199,9 +1236,11 @@ def check_wireless_equipment(g, wdata, rep):
 # POS
 # =============================================================================
 
-def check_pos(g, notes, rep):
+def check_pos(g, notes, drop, rep):
+    """Notes (POS section), the POS tab and Drop_List (POS ports) must all list
+    the same switch + port pairs."""
     T = "POS"
-    rows = []
+    tab = {}
     for r in range(1, g.nrows + 1):
         port_raw, x_raw = g.text(r, col(POS_PORT_COL)), g.text(r, col(POS_X_COL))
         if not port_raw or not x_raw:
@@ -1209,27 +1248,21 @@ def check_pos(g, notes, rep):
         port, x = parse_port(port_raw), parse_x(x_raw)
         if port is None or x is None:
             continue                              # header or free text
-        rows.append({"row": r, "x": x, "port": port})
-    if not rows:
-        rep.warn(T, "No switch/port rows found in columns %s/%s." % (POS_PORT_COL, POS_X_COL))
-        return
-    # Every comparison is on the switch (X#) AND the port together.
-    live = [e for e in notes["entries"] if not e.get("skip")]
-    pos_notes = [e for e in live if e["section"] == "POS"]
-    scope = pos_notes or live
-    known = {(e["x"], e["port"]) for e in scope}
-    for x in rows:
-        if (x["x"], x["port"]) not in known:
-            rep.error(T, "Row %d: X%d port %d is on the POS tab but is not called out in Notes%s."
-                      % (x["row"], x["x"], x["port"], " (POS section)" if pos_notes else ""))
-    if pos_notes:
-        have = {(x["x"], x["port"]) for x in rows}
-        for e in pos_notes:
-            if (e["x"], e["port"]) not in have:
-                rep.error(T, "Notes POS / %s (X%s port %s) is not on the POS tab."
-                          % (e["component"], e["x"], e["port"]))
-    else:
-        rep.warn(T, "Notes has no 'POS' section, so POS rows were compared against every Notes call-out.")
+        if (x, port) in tab:
+            rep.error(T, "X%d port %d is listed twice on the POS tab (rows %d and %d)."
+                      % (x, port, tab[(x, port)], r))
+        tab[(x, port)] = r
+    in_notes = {(e["x"], e["port"]) for e in notes["entries"]
+                if e["section"] == "POS" and not e.get("skip")}
+    sources = [("Notes", in_notes), ("POS tab", set(tab)), ("Drop_List", set(drop.get("pos", {})))]
+    for key in sorted(set().union(*(s for _, s in sources))):
+        missing = [n for n, s in sources if key not in s]
+        if missing:
+            rep.error(T, "X%d port %d is missing from %s (listed in %s)."
+                      % (key[0], key[1], " and ".join(missing),
+                         " and ".join(n for n, s in sources if key in s)))
+    counts = ", ".join("%s = %d" % (n, len(s)) for n, s in sources)
+    rep.note(T, "POS ports: %s." % counts)
 
 
 # =============================================================================
@@ -1362,7 +1395,7 @@ def run_checks(grids):
     diagram = (guard("Network_Diagram", parse_diagram, grids["diagram"], rep)
                if grids.get("diagram") else None) or {"instances": [], "hosts": OrderedDict()}
     drop = (guard("Drop_List", parse_drop, grids["drop"], rep)
-            if grids.get("drop") else None) or {"devices": OrderedDict(), "by_x": {}, "p_header": ""}
+            if grids.get("drop") else None) or {"devices": OrderedDict(), "by_x": {}, "p_header": "", "pos": {}, "uplinks": None}
 
     have_notes, have_drop = bool(grids.get("notes")), bool(grids.get("drop"))
     if have_notes and grids.get("diagram"):
@@ -1377,7 +1410,7 @@ def run_checks(grids):
     if grids.get("wequip") and wdata:
         guard(name["wequip"], check_wireless_equipment, grids["wequip"], wdata, rep)
     if grids.get("pos"):
-        guard(name["pos"], check_pos, grids["pos"], notes, rep)
+        guard(name["pos"], check_pos, grids["pos"], notes, drop, rep)
     if grids.get("video"):
         guard(name["video"], check_video, grids["video"], notes, drop, rep)
     found_table = False
