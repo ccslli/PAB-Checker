@@ -1448,18 +1448,62 @@ def check_ipdvs_coverage(tab, notes, drop, covered, rep):
                           % (h, port, DROP_IPDVS_LABEL, x["row"], x["p"] or "no description", tab))
 
 
+def _find_label(g, pattern, max_row=80):
+    """First (row, col) whose normalised text fully matches `pattern`."""
+    rx = re.compile(pattern)
+    for r in range(1, min(g.nrows, max_row) + 1):
+        for c, t in g.row_cells(r):
+            if rx.fullmatch(norm(t)):
+                return r, c
+    return None
+
+
+def _video_items(g):
+    """Server / UPS / MVS switch+port values.  The cells are found by their
+    labels ('NIC-1 Switch', 'IMM Port', 'UPS Switch', and 'Viewing Station n' /
+    'MVS n' under a 'Switch / Port' header), so the tab layout can move around.
+    Falls back to the fixed cells in the configuration when a label isn't found.
+    -> [(label, where, x, port, raw text, Notes regex)]"""
+    items = []
+    labels = {"Server 1 NIC": ("nic", 1), "Server 2 NIC": ("nic", 2),
+              "Server 1 IMM": ("imm", 1), "Server 2 IMM": ("imm", 2), "UPS 1": ("ups", 1)}
+    for label, xc, pcell, pat in VIDEO_SPLIT_CELLS:
+        sw = pt = None
+        if label in labels:
+            word, n = labels[label]
+            a = _find_label(g, r"%s\d*switch" % word)
+            b = _find_label(g, r"%s\d*port" % word)
+            if a and b:
+                sw, pt = g.get(a[0], a[1] + n), g.get(b[0], b[1] + n)
+                where = "%s/%s" % (a1(a[0], a[1] + n), a1(b[0], b[1] + n))
+        if sw is None and pt is None and not (label in labels and a and b):
+            sw, pt, where = g.at(xc), g.at(pcell), "%s/%s" % (xc, pcell)
+        items.append((label, where, parse_x(sw), parse_port(pt),
+                      "%s / %s" % (clean(sw) or "blank", clean(pt) or "blank"), pat))
+
+    # MVS / viewing stations listed under a 'Switch / Port' column
+    mvs = {}
+    hdr = _find_label(g, r"switch(and)?port")
+    if hdr:
+        for r in range(hdr[0] + 1, min(g.nrows, hdr[0] + 15) + 1):
+            names = " ".join(t for c, t in g.row_cells(r) if c < hdr[1])
+            m = re.search(r"(?:mvs|viewing\s*station)\s*(\d+)", names, re.I)
+            if m:
+                mvs[int(m.group(1))] = (g.get(r, hdr[1]), a1(r, hdr[1]))
+    for label, cc, pat in VIDEO_COMBINED_CELLS:
+        n = int(re.search(r"\d+", label).group(0))
+        val, where = mvs.get(n, (g.at(cc), cc)) if mvs else (g.at(cc), cc)
+        sp = parse_switch_port(val)
+        items.append((label, where, sp["x"], sp["port"], sp["raw"] or "blank", pat))
+    return items
+
+
 def check_video(g, notes, drop, rep, covered):
     T = "Video Servers & Consoles"
     ipdvs = [e for e in notes["entries"] if e["section"] == "IPDVS" and not e.get("skip")]
     if not ipdvs:
         rep.error(T, "Notes has no usable IPDVS section to compare against.")
-    items = []
-    for label, xc, pcell, pat in VIDEO_SPLIT_CELLS:
-        items.append((label, "%s/%s" % (xc, pcell), parse_x(g.at(xc)), parse_port(g.at(pcell)),
-                      "%s / %s" % (clean(g.at(xc)) or "blank", clean(g.at(pcell)) or "blank"), pat))
-    for label, cc, pat in VIDEO_COMBINED_CELLS:
-        sp = parse_switch_port(g.at(cc))
-        items.append((label, cc, sp["x"], sp["port"], sp["raw"] or "blank", pat))
+    items = _video_items(g)
     matched = set()
     for label, where, x, port, raw, pat in items:
         cands = [e for e in ipdvs if re.search(pat, e["component"].lower())]
