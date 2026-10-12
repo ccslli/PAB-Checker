@@ -691,6 +691,16 @@ def parse_notes(g, rep):
                 model_breakdown(L["switches"]))
             for name, L in locs.items()))
 
+    # every switch marked reused on the Old side must be marked reused on the New side
+    def reused(lst):
+        return [s for s in lst if re.search(r"re-?\s*used?", s["status"], re.I)]
+    old_r, new_r = reused(old), reused(new_hosts.values())
+    if len(old_r) != len(new_r):
+        rep.error(T, "'Reconfigured and Reused' count does not match: %d under Old Switches (%s), "
+                     "%d under New Switches (%s)."
+                  % (len(old_r), ", ".join("%s: %s" % (s["loc"], s["host"]) for s in old_r) or "none",
+                     len(new_r), ", ".join("%s: %s" % (s["loc"], s["host"]) for s in new_r) or "none"))
+
     # internal consistency of Section 1 against Section 2
     for e in entries:
         ref = "%s / %s" % (e["section"], e["component"])
