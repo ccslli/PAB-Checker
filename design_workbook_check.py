@@ -103,8 +103,9 @@ ACCESS_MODEL = "C9300X"          # model token inside hostnames
 # Switches with these X numbers are core; every other new switch is access-layer.
 CORE_X_NUMBERS = (0, 1)
 X1_PLUS_THRESHOLD = 36           # X1+ line required above this many access switches
-# A C9300X whose Notes status says "reused" is not counted as new equipment.
-EXCLUDE_REUSED_FROM_NEW_COUNT = True
+# Equipment counts use the model in the hostname only.  The Notes status
+# column ("Installed New", "Reconfigured and Reused", "Installed EOL", or the
+# writer's own remarks) is ignored.
 # Part numbers that must have nothing in D or E
 WIRED_MUST_BE_BLANK = ["C1161X-8P", "MS130-24X-HW", "7X02TVVU00", "F1DC108V"]
 
@@ -644,11 +645,9 @@ def model_breakdown(switches):
 
 
 def is_new_access_model(sw):
-    if not sw["model"].startswith(ACCESS_MODEL):
-        return False
-    if EXCLUDE_REUSED_FROM_NEW_COUNT and "reus" in sw["status"].lower():
-        return False
-    return True
+    """Any switch in a 'New Switches' list whose hostname model is C9300X,
+    whatever its status says."""
+    return sw["model"].startswith(ACCESS_MODEL)
 
 
 def parse_notes(g, rep):
