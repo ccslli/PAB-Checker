@@ -1448,7 +1448,7 @@ def check_ipdvs_coverage(tab, notes, drop, covered, rep):
                           % (h, port, DROP_IPDVS_LABEL, x["row"], x["p"] or "no description", tab))
 
 
-def _find_label(g, pattern, max_row=80):
+def _find_labelled_cell(g, pattern, max_row=80):
     """First (row, col) whose normalised text fully matches `pattern`."""
     rx = re.compile(pattern)
     for r in range(1, min(g.nrows, max_row) + 1):
@@ -1471,8 +1471,8 @@ def _video_items(g):
         sw = pt = None
         if label in labels:
             word, n = labels[label]
-            a = _find_label(g, r"%s\d*switch" % word)
-            b = _find_label(g, r"%s\d*port" % word)
+            a = _find_labelled_cell(g, r"%s\d*switch" % word)
+            b = _find_labelled_cell(g, r"%s\d*port" % word)
             if a and b:
                 sw, pt = g.get(a[0], a[1] + n), g.get(b[0], b[1] + n)
                 where = "%s/%s" % (a1(a[0], a[1] + n), a1(b[0], b[1] + n))
@@ -1483,7 +1483,7 @@ def _video_items(g):
 
     # MVS / viewing stations listed under a 'Switch / Port' column
     mvs = {}
-    hdr = _find_label(g, r"switch(and)?port")
+    hdr = _find_labelled_cell(g, r"switch(and)?port")
     if hdr:
         for r in range(hdr[0] + 1, min(g.nrows, hdr[0] + 15) + 1):
             names = " ".join(t for c, t in g.row_cells(r) if c < hdr[1])
