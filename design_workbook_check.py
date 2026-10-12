@@ -1599,38 +1599,91 @@ def _sheet_key(n):
     return re.sub(r"[^a-z0-9]", "", n.lower().replace("&", "and"))
 
 
+def _protected_view_windows():
+    """Files open in Protected View (the yellow 'Enable Editing' bar) are not in
+    Excel's normal workbook list, and xlwings fails on an Excel window showing
+    one.  They are found here through Excel's ProtectedViewWindows instead."""
+    try:
+        import win32com.client
+        xl = win32com.client.GetActiveObject("Excel.Application")
+        return [xl.ProtectedViewWindows(i) for i in range(1, xl.ProtectedViewWindows.Count + 1)]
+    except Exception:
+        return []
+
+
+def _open_protected(pv):
+    """Workbook behind a Protected View window: read it as-is if Excel allows,
+    otherwise offer to click 'Enable Editing' for the user."""
+    try:
+        wb = pv.Workbook
+        wb.Worksheets.Count                     # make sure it can be read
+        return wb
+    except Exception:
+        pass
+    if ask("%s is in Protected View. Enable editing so it can be checked? (y = yes, Enter = cancel): "
+           % pv.SourceName) == "y":
+        try:
+            return pv.Edit()
+        except Exception as exc:
+            print("Could not enable editing: %s" % exc)
+    return None
+
+
 def select_or_open_workbook():
     pythoncom.CoInitialize()
 
     workbook_choices = []
 
-    # Gather all open workbooks from all running Excel instances
-    for app in xw.apps:
-        for wb in app.books:
-            workbook_choices.append(wb)
+    # Gather all open workbooks from all running Excel instances.
+    # An Excel window showing a Protected View file makes xlwings fail for that
+    # instance, so each instance is tried on its own and skipped if it fails.
+    try:
+        apps = list(xw.apps)
+    except Exception:
+        apps = []
+    for app in apps:
+        try:
+            for wb in app.books:
+                workbook_choices.append(wb)
+        except Exception:
+            pass
+    # Files open in Protected View ('Enable Editing' bar)
+    for pv in _protected_view_windows():
+        workbook_choices.append(pv)
 
     # If there are open workbooks, let user choose one
     if workbook_choices:
         print("Select from open workbooks:")
         for idx, wb in enumerate(workbook_choices, start=1):
             try:
-                print(f"{idx}: {wb.name}")
+                if hasattr(wb, "api"):
+                    print(f"{idx}: {wb.name}")
+                else:
+                    print(f"{idx}: {wb.SourceName}  (Protected View)")
             except Exception:
                 print(f"{idx}: <Unknown Workbook>")
 
         try:
             choice = int(input("Enter number or 0 to open a new file: ").strip())
             if 1 <= choice <= len(workbook_choices):
-                return workbook_choices[choice - 1].api
+                picked = workbook_choices[choice - 1]
+                if hasattr(picked, "api"):
+                    return picked.api
+                return _open_protected(picked)
         except Exception:
             pass
 
     # Fallback: use active Excel instance if one exists, otherwise create one
-    if xw.apps.count > 0:
-        app = xw.apps.active
-        if app is None:
-            app = list(xw.apps)[0]
-    else:
+    app = None
+    try:
+        if xw.apps.count > 0:
+            app = xw.apps.active
+            if app is None:
+                app = list(xw.apps)[0]
+            app.api                             # fails for a Protected View-only instance
+    except Exception:
+        app = None
+    if app is None:
         app = xw.App(visible=True, add_book=False)
 
     file_path = app.api.GetOpenFilename(
