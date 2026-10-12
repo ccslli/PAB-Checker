@@ -98,7 +98,8 @@ WIRED_FIRST_ROW = 4
 WIRED_MODEL_COL = "B"
 WIRED_DESC_COL = "C"
 WIRED_QTY_COLS = ("D", "E")
-WIRED_ROOM_COL = "H"
+WIRED_CLOSET_COL = "G"           # "MDF / IDF" - matched to the Notes closet names first
+WIRED_ROOM_COL = "H"             # room number - used only when the closet name doesn't match
 ACCESS_MODEL = "C9300X"          # model token inside hostnames
 # Switches with these X numbers are core; every other new switch is access-layer.
 CORE_X_NUMBERS = (0, 1)
@@ -1031,18 +1032,24 @@ def check_wired(g, notes, diagram, drop, rep):
     T = "Wired_Equipment_List"
     locs = notes["locs"]
     dc, ec = col(WIRED_QTY_COLS[0]), col(WIRED_QTY_COLS[1])
-    rows, last_room = [], ""
+    rows, last_room, last_closet = [], "", ""
     for r in range(WIRED_FIRST_ROW, g.nrows + 1):
         room = g.text(r, col(WIRED_ROOM_COL))
+        closet = g.text(r, col(WIRED_CLOSET_COL))
         if room:
             last_room = room
+        if closet:
+            last_closet = closet
         model, desc = g.text(r, col(WIRED_MODEL_COL)), g.text(r, col(WIRED_DESC_COL))
         if not model and not desc:
             continue
         rows.append({"row": r, "model": model, "desc": desc, "d": g.get(r, dc), "e": g.get(r, ec),
-                     "room": room or last_room, "kind": classify_wired(model, desc)})
+                     "room": room or last_room, "closet": closet or last_closet,
+                     "kind": classify_wired(model, desc)})
+    by_name = {norm(n): n for n in locs}
     for x in rows:
-        x["loc"] = map_room(x["room"], locs)
+        # closet name (MDF, IDF 1, LAB1 ...) first; the room number only as a fallback
+        x["loc"] = by_name.get(norm(x["closet"])) or map_room(x["room"], locs)
         x["qty"] = qty(x["d"], x["e"])
 
     def de(x):
@@ -1054,9 +1061,9 @@ def check_wired(g, notes, diagram, drop, rep):
 
     rooms_ok = any(x["loc"] for x in rows)
     if not rooms_ok:
-        rep.warn(T, "Column %s rooms could not be matched to the Notes locations (%s), so "
-                    "per-room checks were replaced by whole-sheet totals."
-                 % (WIRED_ROOM_COL, ", ".join(locs) or "none"))
+        rep.warn(T, "Columns %s/%s (closet / room) could not be matched to the Notes locations (%s), so "
+                    "per-closet checks were replaced by whole-sheet totals."
+                 % (WIRED_CLOSET_COL, WIRED_ROOM_COL, ", ".join(locs) or "none"))
 
     mdf_names = [n for n, L in locs.items() if L["type"] == "MDF"]
     mdf = mdf_names[0] if mdf_names else None
