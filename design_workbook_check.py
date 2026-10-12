@@ -98,8 +98,8 @@ WIRED_FIRST_ROW = 4
 WIRED_MODEL_COL = "B"
 WIRED_DESC_COL = "C"
 WIRED_QTY_COLS = ("D", "E")
-WIRED_CLOSET_COL = "G"           # "MDF / IDF" - matched to the Notes closet names first
-WIRED_ROOM_COL = "H"             # room number - used only when the closet name doesn't match
+WIRED_ROOM_COL = "H"
+WIRED_CLOSET_COL = "G"           # "MDF / IDF" - only used to describe rows in messages
 ACCESS_MODEL = "C9300X"          # model token inside hostnames
 # Switches with these X numbers are core; every other new switch is access-layer.
 CORE_X_NUMBERS = (0, 1)
@@ -1046,10 +1046,8 @@ def check_wired(g, notes, diagram, drop, rep):
         rows.append({"row": r, "model": model, "desc": desc, "d": g.get(r, dc), "e": g.get(r, ec),
                      "room": room or last_room, "closet": closet or last_closet,
                      "kind": classify_wired(model, desc)})
-    by_name = {norm(n): n for n in locs}
     for x in rows:
-        # closet name (MDF, IDF 1, LAB1 ...) first; the room number only as a fallback
-        x["loc"] = by_name.get(norm(x["closet"])) or map_room(x["room"], locs)
+        x["loc"] = map_room(x["room"], locs)
         x["qty"] = qty(x["d"], x["e"])
 
     def de(x):
@@ -1060,10 +1058,25 @@ def check_wired(g, notes, diagram, drop, rep):
                 if x["kind"] == kind and (loc is None or x["loc"] == loc)]
 
     rooms_ok = any(x["loc"] for x in rows)
+
+    # rows with a quantity that could not be placed because column H has no room number
+    roomless = [x for x in rows if x["kind"] and x["loc"] is None and x["qty"]
+                and norm(x["room"]) in ("", "0")]
+    if rooms_ok and roomless:
+        rep.error(T, "No room number entered in column %s for %d line(s) with a quantity, so they "
+                     "could not be matched to a closet:\n%s"
+                  % (WIRED_ROOM_COL, len(roomless), "\n".join(
+                      "          row %d: %s%s (D=%s, E=%s)"
+                      % (x["row"], x["model"], " under '%s'" % x["closet"] if x["closet"] else "",
+                         clean(x["d"]) or "blank", clean(x["e"]) or "blank") for x in roomless)))
+
+    def no_room(kinds):
+        n = sum(1 for x in roomless if x["kind"] in kinds)
+        return " - %d line(s) of this item have no room number entered" % n if (n and rooms_ok) else ""
     if not rooms_ok:
-        rep.warn(T, "Columns %s/%s (closet / room) could not be matched to the Notes locations (%s), so "
-                    "per-closet checks were replaced by whole-sheet totals."
-                 % (WIRED_CLOSET_COL, WIRED_ROOM_COL, ", ".join(locs) or "none"))
+        rep.warn(T, "Column %s rooms could not be matched to the Notes locations (%s), so "
+                    "per-room checks were replaced by whole-sheet totals."
+                 % (WIRED_ROOM_COL, ", ".join(locs) or "none"))
 
     mdf_names = [n for n, L in locs.items() if L["type"] == "MDF"]
     mdf = mdf_names[0] if mdf_names else None
@@ -1094,11 +1107,12 @@ def check_wired(g, notes, diagram, drop, rep):
         got_rows = pick("pdu", name)
         got = sum(x["qty"] for x in got_rows)
         if not got_rows:
-            rep.error(T, "%s: no line found for %s (expected %d for %d access switches)."
-                      % (PDU, name, exp, n_acc))
+            rep.error(T, "%s: no line found for %s (expected %d for %d access switches)%s."
+                      % (PDU, name, exp, n_acc, no_room(("pdu",))))
         elif got != exp:
-            rep.error(T, "%s in %s: expected %d (%d access switches), found %s (%s)."
-                      % (PDU, name, exp, n_acc, got, "; ".join(de(x) for x in got_rows)))
+            rep.error(T, "%s in %s: expected %d (%d access switches), found %s (%s)%s."
+                      % (PDU, name, exp, n_acc, got, "; ".join(de(x) for x in got_rows),
+                         no_room(("pdu",))))
     if not rooms_ok:
         got = sum(x["qty"] for x in pick("pdu"))
         if got != exp_total:
@@ -1120,8 +1134,9 @@ def check_wired(g, notes, diagram, drop, rep):
             lr = [x for x in sw_rows if x["loc"] == name]
             got = sum(x["qty"] for x in lr)
             if got != exp:
-                rep.error(T, "C9300X-48HXN-M in %s: expected %d, found %s (%s)."
-                          % (name, exp, got, "; ".join(de(x) for x in lr) or "no line"))
+                rep.error(T, "C9300X-48HXN-M in %s: expected %d, found %s (%s)%s."
+                          % (name, exp, got, "; ".join(de(x) for x in lr) or "no line",
+                             no_room(("c9300x", "c9300x_x0"))))
     diag_model = sum(1 for h, lst in diagram["hosts"].items() if lst[0]["model"].startswith(ACCESS_MODEL))
     notes_model_all = sum(1 for s in all_new if s["model"].startswith(ACCESS_MODEL))
     if diagram["hosts"] and diag_model != notes_model_all:
