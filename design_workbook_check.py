@@ -117,7 +117,7 @@ WDATA_MATCH_COL = "D"            # must equal Drop_List column P
 WDATA_PORT_COL = "G"
 WDATA_X_COL = "H"
 WDATA_MODEL_COL = "L"
-WDATA_TAG_COL = "P"              # network tag: borough + 1 (odd rack ID) / 2 (even rack ID)
+WDATA_TAG_CELL = "P5"            # network tag: borough + 1 (odd rack ID) / 2 (even rack ID)
 WDATA_RACK_CELL = "A2"           # rack ID, e.g. 26Q216
 BOROUGHS = OrderedDict([("Q", "Queens"), ("B", "Brooklyn"), ("M", "Manhattan"),
                         ("R", "Staten Island"), ("X", "Bronx")])
@@ -1362,46 +1362,25 @@ def check_wireless_data(g, drop, rep):
     return {"counts": counts, "labels": labels}
 
 
-def _row_ranges(rows):
-    """[5, 6, 7, 9] -> '5-7, 9'"""
-    out, rows = [], sorted(rows)
-    for r in rows:
-        if out and r == out[-1][1] + 1:
-            out[-1][1] = r
-        else:
-            out.append([r, r])
-    return ", ".join(str(a) if a == b else "%d-%d" % (a, b) for a, b in out)
-
-
 def check_network_tags(g, rep):
-    """Column P must be the site's borough + 1 (odd rack ID) or 2 (even rack ID).
-    The borough is the 3rd character of the rack ID in A2 (26Q216 -> Queens, even -> 2)."""
+    """The network tag in P5 (the rest of column P refers to it) must be the
+    site's borough + 1 (odd rack ID) or 2 (even rack ID).  The borough is the
+    3rd character of the rack ID in A2 (26Q216 -> Queens, even -> 2)."""
     T = "Wireless_Design_Data"
     rack = clean(g.at(WDATA_RACK_CELL)).upper()
     m = re.fullmatch(r"\d{2}([A-Z])\d*(\d)", rack)
     if not m or m.group(1) not in BOROUGHS:
-        rep.error(T, "RACK ID '%s' (cell %s) does not match template - network tags were not checked."
+        rep.error(T, "RACK ID '%s' (cell %s) does not match template - network tag was not checked."
                   % (rack or "blank", WDATA_RACK_CELL))
         return
     borough = BOROUGHS[m.group(1)]
     want = "1" if int(m.group(2)) % 2 else "2"
-    names = {norm(b): b for b in BOROUGHS.values()}
-    bad = OrderedDict()                          # tag text -> rows
-    for r in range(WDATA_FIRST_ROW, g.nrows + 1):
-        tag = g.text(r, col(WDATA_TAG_COL))
-        is_ap = any(g.text(r, col(c)) for c in (WDATA_MODEL_COL, WDATA_PORT_COL, WDATA_X_COL))
-        if not tag and not is_ap:
-            continue
-        n = norm(tag)
-        found = [b for k, b in names.items() if k in n]
-        digit = re.findall(r"\d", tag)
-        if found != [borough] or not digit or digit[-1] != want:
-            bad.setdefault(tag or "blank", []).append(r)
-    for tag, rows in bad.items():
-        rep.error(T, "Network tag '%s' in column %s (%s %s) should be %s %s - rack ID %s is %s."
-                  % (tag, WDATA_TAG_COL, "row" if len(rows) == 1 else "rows", _row_ranges(rows),
-                     borough, want, rack,
-                     "odd" if want == "1" else "even"))
+    tag = clean(g.at(WDATA_TAG_CELL))
+    found = [b for b in BOROUGHS.values() if norm(b) in norm(tag)]
+    digit = re.findall(r"\d", tag)
+    if found != [borough] or not digit or digit[-1] != want:
+        rep.error(T, "Network tag '%s' in %s should be %s %s - rack ID %s is %s."
+                  % (tag or "blank", WDATA_TAG_CELL, borough, want, rack, "odd" if want == "1" else "even"))
 
 
 def check_wireless_equipment(g, wdata, rep):
