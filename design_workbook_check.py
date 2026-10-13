@@ -243,12 +243,13 @@ def is_blank(v):
 
 
 def qty(d, e):
-    """Quantity for a row: column E when numeric, otherwise column D."""
-    for v in (e, d):
+    """Total quantity for a row: column D (existing) + column E (needed)."""
+    total = 0
+    for v in (d, e):
         n = num(v)
         if isinstance(n, (int, float)):
-            return n
-    return 0
+            total += n
+    return total
 
 
 def parse_port(v):
