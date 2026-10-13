@@ -1233,8 +1233,8 @@ def check_wired(g, notes, diagram, drop, rep):
     else:
         got = sum(x["qty"] for x in sfp)
         if got != exp:
-            rep.error(T, "SFP-10/25G-CSR-S=: expected %d (%d %s excluding X0, x 2 + 8%s), found %s (%s)."
-                      % (exp, sfp_model, ACCESS_MODEL, " + 8 for the FPR3130 firewall" if fpr3130 else "",
+            rep.error(T, "SFP-10/25G-CSR-S=: expected %d (%d x 2 + 8%s), found %s (%s)."
+                      % (exp, sfp_model, " + 8" if fpr3130 else "",
                          got, "; ".join(de(x) for x in sfp)))
 
     # ---- anything else with a quantity (equipment this script has no rule for) ----
