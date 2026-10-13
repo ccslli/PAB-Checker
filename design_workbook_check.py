@@ -1975,9 +1975,37 @@ def find_qa_script():
             return None
 
 
+def qa_folder_ready(folder):
+    """The DOE QA script expects exactly one .xlsx in its folder.  Keep checking
+    until that is true, or the user chooses to exit.  -> True to go ahead."""
+    while True:
+        try:
+            files = sorted(f for f in os.listdir(folder)
+                           if f.lower().endswith(".xlsx") and not f.startswith("~$")   # ~$ = Excel lock file
+                           and os.path.isfile(os.path.join(folder, f)))
+        except OSError as exc:
+            print("Could not read the folder %s: %s" % (folder, exc))
+            files = None
+        if files is not None and len(files) == 1:
+            print("Excel file found: %s" % files[0])
+            return True
+        if files is not None:
+            if not files:
+                print("\nNo Excel file (.xlsx) was found in:\n  %s" % folder)
+            else:
+                print("\n%d Excel files (.xlsx) were found in:\n  %s\n%s"
+                      % (len(files), folder, "\n".join("    " + f for f in files)))
+            print("There must be exactly 1 .xlsx file in this folder for the DOE QA script.")
+        if ask("Fix the folder, then press y to check again (Enter = exit): ") != "y":
+            print("DOE QA script aborted.")
+            return False
+
+
 def run_qa_script():
     script = find_qa_script()
     if not script:
+        return
+    if not qa_folder_ready(os.path.dirname(script)):
         return
     print("\nRunning %s ...\n" % script)
     # same terminal, same Python; this script ends when the QA script ends
