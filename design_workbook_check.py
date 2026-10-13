@@ -117,6 +117,7 @@ WDATA_MATCH_COL = "D"            # must equal Drop_List column P
 WDATA_PORT_COL = "G"
 WDATA_X_COL = "H"
 WDATA_MODEL_COL = "L"
+WDATA_R5_CELL = "R5"             # must hold a value: not blank and not an Excel error
 WDATA_TAG_CELL = "P5"            # network tag: borough + 1 (odd rack ID) / 2 (even rack ID)
 WDATA_RACK_CELL = "A2"           # rack ID, e.g. 26Q216
 BOROUGHS = OrderedDict([("Q", "Queens"), ("B", "Brooklyn"), ("M", "Manhattan"),
@@ -207,10 +208,30 @@ def cell_rc(addr):
     return int(m.group(2)), col(m.group(1))
 
 
+# Excel error values.  Through COM they arrive as large negative numbers
+# (-2146828288 + code); openpyxl and text copies give the '#N/A' style text.
+EXCEL_ERRORS = {2000: "#NULL!", 2007: "#DIV/0!", 2015: "#VALUE!", 2023: "#REF!", 2029: "#NAME?",
+                2036: "#NUM!", 2042: "#N/A", 2043: "#GETTING_DATA", 2045: "#SPILL!", 2046: "#CONNECT!",
+                2047: "#BLOCKED!", 2048: "#UNKNOWN!", 2049: "#FIELD!", 2050: "#CALC!"}
+
+
+def excel_error(v):
+    """'#N/A' etc. when the cell holds an Excel error, otherwise None."""
+    if isinstance(v, int) and not isinstance(v, bool) and -2146828288 <= v <= -2146826000:
+        return EXCEL_ERRORS.get(v + 2146828288, "#ERROR")
+    if isinstance(v, str):
+        t = v.strip().upper()
+        if t in EXCEL_ERRORS.values() or t in ("#N/A!", "#ERROR"):
+            return t
+    return None
+
+
 def clean(v):
     """Cell value -> tidy string ('' for empty)."""
     if v is None:
         return ""
+    if excel_error(v):
+        return excel_error(v)
     if isinstance(v, bool):
         return str(v)
     if isinstance(v, datetime.datetime):
@@ -1358,6 +1379,14 @@ def check_wireless_data(g, drop, rep):
                              ", ".join(d["p"] or "blank" for d in rows), dev, port,
                              ", ".join(str(d["row"]) for d in rows)))
     check_network_tags(g, rep)
+    r5 = g.at(WDATA_R5_CELL)
+    r5_row, r5_col = cell_rc(WDATA_R5_CELL)
+    r5_name = g.text(WDATA_HEADER_ROW, r5_col)
+    what = "%s (%s)" % (r5_name, WDATA_R5_CELL) if r5_name else WDATA_R5_CELL
+    if excel_error(r5):
+        rep.error(T, "%s shows an Excel error (%s)." % (what, excel_error(r5)))
+    elif clean(r5) == "":
+        rep.error(T, "%s is blank." % what)
     rep.note(T, "AP model counts: %s." % (", ".join("%s = %d" % (labels[k], v) for k, v in counts.items()) or "none"))
     return {"counts": counts, "labels": labels}
 
