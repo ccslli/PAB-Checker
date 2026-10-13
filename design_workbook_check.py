@@ -414,14 +414,19 @@ class Report:
     def __init__(self):
         self.items = []          # (tab, level, message)
 
+    @staticmethod
+    def _tidy(msg):
+        # a message ending in a question ('did you mean X?') gets no extra full stop
+        return re.sub(r"([?!])\.(\s*)$", r"\1\2", msg)
+
     def error(self, tab, msg):
-        self.items.append((tab, "ERROR", msg))
+        self.items.append((tab, "ERROR", self._tidy(msg)))
 
     def warn(self, tab, msg):
-        self.items.append((tab, "WARN", msg))
+        self.items.append((tab, "WARN", self._tidy(msg)))
 
     def note(self, tab, msg):
-        self.items.append((tab, "NOTE", msg))
+        self.items.append((tab, "NOTE", self._tidy(msg)))
 
     def count(self, level):
         return sum(1 for i in self.items if i[1] == level)
