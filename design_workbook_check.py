@@ -1054,6 +1054,17 @@ def map_room(room_text, locs):
     return None
 
 
+def map_room_loose(room_text, locs):
+    """Same room number ignoring a letter suffix (129 vs 129A).
+    -> (location, the Notes room it matched) or (None, None)"""
+    core = re.fullmatch(r"\s*([A-Za-z]?)(\d+)[A-Za-z]?\s*", clean(room_text))
+    if not core:
+        return None, None
+    hits = [(name, room) for name, L in locs.items() for room in L["rooms"]
+            if re.fullmatch(r"%s%s[A-Za-z]?" % (re.escape(core.group(1)), core.group(2)), room, re.I)]
+    return hits[0] if len({h[0] for h in hits}) == 1 else (None, None)
+
+
 def check_wired(g, notes, diagram, drop, rep):
     T = "Wired_Equipment_List"
     locs = notes["locs"]
@@ -1074,6 +1085,9 @@ def check_wired(g, notes, diagram, drop, rep):
                      "kind": classify_wired(model, desc)})
     for x in rows:
         x["loc"] = map_room(x["room"], locs)
+        x["loose"] = None
+        if x["loc"] is None and norm(x["room"]) not in ("", "0"):
+            x["loc"], x["loose"] = map_room_loose(x["room"], locs)
         x["qty"] = qty(x["d"], x["e"])
 
     def de(x):
@@ -1084,6 +1098,13 @@ def check_wired(g, notes, diagram, drop, rep):
                 if x["kind"] == kind and (loc is None or x["loc"] == loc)]
 
     rooms_ok = any(x["loc"] for x in rows)
+    loose = OrderedDict()
+    for x in rows:
+        if x["loose"]:
+            loose.setdefault((x["room"], x["loose"], x["loc"]), 0)
+    for (sheet_room, notes_room, name) in loose:
+        rep.warn(T, "Room %s in column %s is %s in the Notes hostnames for %s - counted as %s, "
+                    "but one of the two should be corrected." % (sheet_room, WIRED_ROOM_COL, notes_room, name, name))
 
     # rows with a quantity that could not be placed because column H has no room number
     roomless = [x for x in rows if x["kind"] and x["loc"] is None and x["qty"]
