@@ -737,7 +737,22 @@ def parse_notes(g, rep):
         else:
             seen[key] = e
 
-    return {"start": start, "end": end, "date": date, "entries": entries,
+    # firewall model being installed (e.g. 'FPR3130' from '19B302-FPR3130'),
+    # taken from the rows under 'New Device' in the latest Design Notes
+    new_fw, any_fw, under_new = [], [], False
+    for r in range(start, end + 1):
+        cells = g.row_cells(r)
+        names = [norm(t) for _, t in cells]
+        if "newdevice" in names:
+            under_new = True
+        elif "olddevice" in names or not cells:
+            under_new = False
+        for _, t in cells:
+            for m in re.finditer(r"FPR\s*-?\s*(\d{4})", t, re.I):
+                (new_fw if under_new else any_fw).append("FPR" + m.group(1))
+    firewall = (new_fw or any_fw or [None])[-1]
+
+    return {"start": start, "end": end, "date": date, "entries": entries, "firewall": firewall,
             "switches": switches, "new": new, "old": old, "new_hosts": new_hosts,
             "old_hosts": OrderedDict((s["host"], s) for s in old),
             "by_x": by_x, "locs": locs}
@@ -1162,6 +1177,12 @@ def check_wired(g, notes, diagram, drop, rep):
     elif not (len(filled) == 1 and num(filled[0]["e"]) == 1):
         rep.error(T, "Firewall: exactly one line should have 1 in column %s, found: %s."
                   % (WIRED_QTY_COLS[1], "; ".join("%s '%s' %s" % (x["model"], x["desc"], de(x)) for x in filled)))
+    wired_fw = sorted({re.match(r"FPR\d{4}", x["model"].upper()).group(0) for x in filled
+                       if not is_blank(x["e"]) and re.match(r"FPR\d{4}", x["model"].upper())})
+    notes_fw = notes.get("firewall")
+    if notes_fw and wired_fw and notes_fw not in wired_fw:
+        rep.error(T, "Firewall: Notes says %s but %s is selected here." % (notes_fw, " / ".join(wired_fw)))
+    fpr3130 = notes_fw == "FPR3130" or "FPR3130" in wired_fw
 
     # ---- single-quantity MDF items (the part can appear on several rows) ----
     for kind, label in (("c8300", "C8300-2N2S-4T2X"), ("c1100tg", "C1100TG-1N32A")):
@@ -1206,14 +1227,15 @@ def check_wired(g, notes, diagram, drop, rep):
 
     # ---- SFPs --------------------------------------------------------------
     sfp = pick("sfp", pool=mdf_rows)
-    exp = sfp_model * 2 + 8
+    exp = sfp_model * 2 + 8 + (8 if fpr3130 else 0)       # FPR3130 needs 8 more
     if not sfp:
         rep.error(T, "SFP-10/25G-CSR-S= line not found.")
     else:
         got = sum(x["qty"] for x in sfp)
         if got != exp:
-            rep.error(T, "SFP-10/25G-CSR-S=: expected %d (%d %s excluding X0, x 2 + 8), found %s (%s)."
-                      % (exp, sfp_model, ACCESS_MODEL, got, "; ".join(de(x) for x in sfp)))
+            rep.error(T, "SFP-10/25G-CSR-S=: expected %d (%d %s excluding X0, x 2 + 8%s), found %s (%s)."
+                      % (exp, sfp_model, ACCESS_MODEL, " + 8 for the FPR3130 firewall" if fpr3130 else "",
+                         got, "; ".join(de(x) for x in sfp)))
 
     # ---- anything else with a quantity (equipment this script has no rule for) ----
     def is_qty(v):
