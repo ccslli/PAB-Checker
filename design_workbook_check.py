@@ -1379,8 +1379,8 @@ def check_network_tags(g, rep):
     found = [b for b in BOROUGHS.values() if norm(b) in norm(tag)]
     digit = re.findall(r"\d", tag)
     if found != [borough] or not digit or digit[-1] != want:
-        rep.error(T, "Network tag '%s' in %s should be %s %s - rack ID %s is %s."
-                  % (tag or "blank", WDATA_TAG_CELL, borough, want, rack, "odd" if want == "1" else "even"))
+        rep.error(T, "Network tag '%s' should be %s %s - rack ID %s is %s."
+                  % (tag or "blank", borough, want, rack, "odd" if want == "1" else "even"))
 
 
 def check_wireless_equipment(g, wdata, rep):
