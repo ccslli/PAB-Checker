@@ -551,7 +551,7 @@ def parse_notes_sections(g, start, end, rep):
 def parse_notes_switches(g, start, end, rep):
     """Section 2: MDF / IDFn / labs -> Old Switches / New Switches lists."""
     switches = []
-    loc, mode, mcol = None, None, None
+    loc, mode, mcol, last_marker = None, None, None, None
     for r in range(start, end + 1):
         cells = g.row_cells(r)
         marker = None
@@ -565,7 +565,11 @@ def parse_notes_switches(g, start, end, rep):
                 break
         if marker:
             mode, mcol = marker
-            for up in (r - 1, r - 2):           # location name sits just above
+            # 'New Switches' straight after an 'Old Switches' list belongs to the
+            # same closet; otherwise the closet name sits just above the heading
+            same_closet = mode == "new" and last_marker == "old"
+            last_marker = mode
+            for up in (() if same_closet else (r - 1, r - 2)):
                 above = g.text(up, mcol)
                 if above:
                     if (not HOST_RE.search(g.text(up, mcol + 1))
@@ -584,6 +588,13 @@ def parse_notes_switches(g, start, end, rep):
                 if m:
                     host, hcol = m.group(1).upper(), c
                     break
+        if not host:
+            # a device name without an X# (e.g. '10X306_C9300X_48HXN') beside a label
+            t = g.text(r, mcol + 1)
+            if g.text(r, mcol) and re.fullmatch(r"[A-Za-z0-9\-]+(?:_[A-Za-z0-9\-]+)+", t):
+                host, hcol = t.upper(), mcol + 1
+                if mode == "new":
+                    rep.warn("Notes", "Row %d in %s: '%s' has no X# in its hostname." % (r, loc or "?", t))
         if not host:
             # A text-only row inside a block.  Normally it is the next closet's
             # name (followed by 'Old Switches').  If switches follow it directly,
