@@ -117,7 +117,7 @@ WDATA_MATCH_COL = "D"            # must equal Drop_List column P
 WDATA_PORT_COL = "G"
 WDATA_X_COL = "H"
 WDATA_MODEL_COL = "L"
-WDATA_R5_CELL = "R5"             # site address: must not be blank or an Excel error
+WDATA_ADDRESS_COL = "R"          # address, row 5 down: must not be blank or an Excel error
 WDATA_TAG_CELL = "P5"            # network tag: borough + 1 (odd rack ID) / 2 (even rack ID)
 WDATA_RACK_CELL = "A2"           # rack ID, e.g. 26Q216
 BOROUGHS = OrderedDict([("Q", "Queens"), ("B", "Brooklyn"), ("M", "Manhattan"),
@@ -1379,14 +1379,40 @@ def check_wireless_data(g, drop, rep):
                              ", ".join(d["p"] or "blank" for d in rows), dev, port,
                              ", ".join(str(d["row"]) for d in rows)))
     check_network_tags(g, rep)
-    r5 = g.at(WDATA_R5_CELL)
-    what = "Address (%s)" % WDATA_R5_CELL
-    if excel_error(r5):
-        rep.error(T, "%s shows an Excel error (%s)." % (what, excel_error(r5)))
-    elif clean(r5) == "":
-        rep.error(T, "%s is blank." % what)
+    check_addresses(g, rep)
     rep.note(T, "AP model counts: %s." % (", ".join("%s = %d" % (labels[k], v) for k, v in counts.items()) or "none"))
     return {"counts": counts, "labels": labels}
+
+
+def _row_ranges(rows):
+    """[5, 6, 7, 9] -> '5-7, 9'"""
+    out = []
+    for r in sorted(rows):
+        if out and r == out[-1][1] + 1:
+            out[-1][1] = r
+        else:
+            out.append([r, r])
+    return ", ".join(str(a) if a == b else "%d-%d" % (a, b) for a, b in out)
+
+
+def check_addresses(g, rep):
+    """Every AP row (row 5 down) needs an address in column R that is not blank
+    and not an Excel error.  Problems are grouped so 100 bad rows give one line."""
+    T = "Wireless_Design_Data"
+    ac = col(WDATA_ADDRESS_COL)
+    name = g.text(WDATA_HEADER_ROW, ac) or "Address"
+    problems = OrderedDict()                    # 'is blank' / 'shows an Excel error (#N/A)' -> rows
+    for r in range(WDATA_FIRST_ROW, g.nrows + 1):
+        is_ap = any(g.text(r, col(c)) for c in (WDATA_MODEL_COL, WDATA_PORT_COL, WDATA_X_COL))
+        if not is_ap and r != WDATA_FIRST_ROW:
+            continue
+        v = g.get(r, ac)
+        if excel_error(v):
+            problems.setdefault("shows an Excel error (%s)" % excel_error(v), []).append(r)
+        elif clean(v) == "":
+            problems.setdefault("is blank", []).append(r)
+    for what, rows in problems.items():
+        rep.error(T, "%s %s (%s %s)." % (name, what, "row" if len(rows) == 1 else "rows", _row_ranges(rows)))
 
 
 def check_network_tags(g, rep):
