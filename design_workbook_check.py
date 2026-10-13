@@ -1096,9 +1096,22 @@ def check_wired(g, notes, diagram, drop, rep):
                       % (x["row"], x["model"], " under '%s'" % x["closet"] if x["closet"] else "",
                          clean(x["d"]) or "blank", clean(x["e"]) or "blank") for x in roomless)))
 
-    def no_room(kinds):
+    # rows with a room number that matches no Notes closet (e.g. Notes says RM-B29, sheet says 129)
+    unknown_rooms = OrderedDict()
+    for x in rows:
+        if x["kind"] and x["loc"] is None and x["qty"] and norm(x["room"]) not in ("", "0"):
+            unknown_rooms.setdefault(x["room"], x["closet"])
+
+    def no_room(kinds, name=None):
+        out = ""
         n = sum(1 for x in roomless if x["kind"] in kinds)
-        return " - %d line(s) of this item have no room number entered" % n if (n and rooms_ok) else ""
+        if n and rooms_ok:
+            out += " - %d line(s) of this item have no room number entered" % n
+        if name and rooms_ok and unknown_rooms:
+            out += (" - Notes hostnames put %s in room %s, but column %s has room %s that matches no closet in Notes"
+                    % (name, " / ".join(sorted(locs[name]["rooms"])) or "(no room in hostname)", WIRED_ROOM_COL,
+                       ", ".join("%s%s" % (r, " (%s)" % c if c else "") for r, c in unknown_rooms.items())))
+        return out
     if not rooms_ok:
         rep.warn(T, "Column %s rooms could not be matched to the Notes locations (%s), so "
                     "per-room checks were replaced by whole-sheet totals."
@@ -1134,7 +1147,7 @@ def check_wired(g, notes, diagram, drop, rep):
         got = sum(x["qty"] for x in got_rows)
         if not got_rows:
             rep.error(T, "%s: no line found for %s (expected %d for %d access switches)%s."
-                      % (PDU, name, exp, n_acc, no_room(("pdu",))))
+                      % (PDU, name, exp, n_acc, no_room(("pdu",), name)))
         elif got != exp:
             rep.error(T, "%s in %s: expected %d (%d access switches), found %s (%s)%s."
                       % (PDU, name, exp, n_acc, got, "; ".join(de(x) for x in got_rows),
@@ -1162,7 +1175,7 @@ def check_wired(g, notes, diagram, drop, rep):
             if got != exp:
                 rep.error(T, "C9300X-48HXN-M in %s: expected %d, found %s (%s)%s."
                           % (name, exp, got, "; ".join(de(x) for x in lr) or "no line",
-                             no_room(("c9300x", "c9300x_x0"))))
+                             no_room(("c9300x", "c9300x_x0"), name if not lr else None)))
     diag_model = sum(1 for h, lst in diagram["hosts"].items() if lst[0]["model"].startswith(ACCESS_MODEL))
     notes_model_all = sum(1 for s in all_new if s["model"].startswith(ACCESS_MODEL))
     if diagram["hosts"] and diag_model != notes_model_all:
