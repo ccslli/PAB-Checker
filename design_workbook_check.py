@@ -117,7 +117,7 @@ WDATA_MATCH_COL = "D"            # must equal Drop_List column P
 WDATA_PORT_COL = "G"
 WDATA_X_COL = "H"
 WDATA_MODEL_COL = "L"
-WDATA_R5_CELL = "R5"             # must hold a value: not blank and not an Excel error
+WDATA_R5_CELL = "R5"             # site address: must not be blank or an Excel error
 WDATA_TAG_CELL = "P5"            # network tag: borough + 1 (odd rack ID) / 2 (even rack ID)
 WDATA_RACK_CELL = "A2"           # rack ID, e.g. 26Q216
 BOROUGHS = OrderedDict([("Q", "Queens"), ("B", "Brooklyn"), ("M", "Manhattan"),
@@ -1380,9 +1380,7 @@ def check_wireless_data(g, drop, rep):
                              ", ".join(str(d["row"]) for d in rows)))
     check_network_tags(g, rep)
     r5 = g.at(WDATA_R5_CELL)
-    r5_row, r5_col = cell_rc(WDATA_R5_CELL)
-    r5_name = g.text(WDATA_HEADER_ROW, r5_col)
-    what = "%s (%s)" % (r5_name, WDATA_R5_CELL) if r5_name else WDATA_R5_CELL
+    what = "Address (%s)" % WDATA_R5_CELL
     if excel_error(r5):
         rep.error(T, "%s shows an Excel error (%s)." % (what, excel_error(r5)))
     elif clean(r5) == "":
