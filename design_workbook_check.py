@@ -1103,8 +1103,9 @@ def check_wired(g, notes, diagram, drop, rep):
         if x["loose"]:
             loose.setdefault((x["room"], x["loose"], x["loc"]), 0)
     for (sheet_room, notes_room, name) in loose:
+        # the hostname is the reference, so the sheet's room number is what needs fixing
         rep.warn(T, "Room %s in column %s is %s in the Notes hostnames for %s - counted as %s, "
-                    "but one of the two should be corrected." % (sheet_room, WIRED_ROOM_COL, notes_room, name, name))
+                    "please correct the room number to %s." % (sheet_room, WIRED_ROOM_COL, notes_room, name, name, notes_room))
 
     # rows with a quantity that could not be placed because column H has no room number
     roomless = [x for x in rows if x["kind"] and x["loc"] is None and x["qty"]
