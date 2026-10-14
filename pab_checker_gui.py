@@ -35,8 +35,9 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, 
 import design_workbook_check as core
 
 APP_TITLE = "PAB Checker"
-# Design Team icon (built by branding/make_dt_icon.py)
-ICON_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "branding", "dt_icon.ico")
+# Design Team icon (built by branding/make_dt_icon.py), looked for next to this file
+BRANDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "branding")
+ICON_FILES = ("dt_icon.ico", "dt_icon_256.png")
 PLACEHOLDER = "Select a workbook..."
 
 # ---- palettes: rack-panel greys, Cat6-blue accent, port-LED status colours ----
@@ -601,6 +602,20 @@ class CheckerWindow(QMainWindow):
         QMessageBox.critical(self, APP_TITLE, "%s\n\n%s: %s" % (msg, type(exc).__name__, exc))
 
 
+def load_icon(app):
+    """Set the Design Team icon; say where it looked if it can't be loaded."""
+    for name in ICON_FILES:
+        path = os.path.join(BRANDING_DIR, name)
+        if os.path.isfile(path):
+            icon = QIcon(path)
+            if not icon.isNull():
+                app.setWindowIcon(icon)
+                return True
+            print("Icon file could not be read: %s" % path)
+    print("Design Team icon not found. Expected the 'branding' folder here:\n  %s" % BRANDING_DIR)
+    return False
+
+
 def main():
     if sys.platform == "win32":
         # Without this, Windows groups the window under python.exe in the taskbar and
@@ -612,8 +627,7 @@ def main():
             pass
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    if os.path.isfile(ICON_FILE):
-        app.setWindowIcon(QIcon(ICON_FILE))
+    load_icon(app)
     apply_theme(app, "dark" if saved_dark_mode(QSettings("PAB Checker", "PAB Checker")) else "light")
     if core.pythoncom is None or core.xw is None:
         QMessageBox.critical(None, APP_TITLE, "pywin32 and xlwings are needed.\n\n"
