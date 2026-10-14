@@ -10,17 +10,19 @@ Writes:
     dt_icon_1024.png   large master (slides, docs, web)
     dt_icon_256.png    medium PNG
 
-Colours come from the team logo: dark slate-teal background, cyan letters.
+Colours come from the team logo: dark slate-teal background, bright cyan D,
+teal T.
 The letters are drawn as shapes (no font needed), so the icon is identical
 on every machine.  Change the values below and re-run to adjust.
 """
 
 import os
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 BACKGROUND = "#1E2A31"      # dark slate-teal
-LETTERS = "#3CC9CB"         # cyan
+LETTER_D = "#65FAFB"        # bright cyan
+LETTER_T = "#2AA6A9"        # teal
 GLOW = "#3CC9CB"            # soft halo behind the letters (large sizes only)
 
 S = 1024                    # master size; smaller sizes are scaled from it
@@ -51,11 +53,15 @@ def master(with_glow=True):
     ImageDraw.Draw(im).rounded_rectangle((40, 40, S - 40, S - 40), 210, fill=BACKGROUND)
     mask = letters_mask()
     if with_glow:
-        halo = mask.filter(ImageFilter.GaussianBlur(28)).point(lambda v: int(v * 0.6))
+        halo = mask.filter(ImageFilter.GaussianBlur(28)).point(lambda v: int(v * 0.5))
         layer = Image.new("RGBA", (S, S), GLOW)
         layer.putalpha(halo)
         im = Image.alpha_composite(im, layer)
-    im.paste(Image.new("RGBA", (S, S), LETTERS), (0, 0), mask)
+    d_only = mask.copy()                        # the D is the left half of the mark
+    ImageDraw.Draw(d_only).rectangle((S // 2 + 10, 0, S, S), fill=0)
+    t_only = ImageChops.subtract(mask, d_only)
+    im.paste(Image.new("RGBA", (S, S), LETTER_D), (0, 0), d_only)
+    im.paste(Image.new("RGBA", (S, S), LETTER_T), (0, 0), t_only)
     return im
 
 
