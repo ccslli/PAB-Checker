@@ -21,6 +21,7 @@ The branding folder is packed into the .exe, and the DOE QA script is run with
 the Python installed on the PC.
 """
 
+import base64
 import html
 import os
 import subprocess
@@ -37,6 +38,11 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, 
                                QVBoxLayout, QWidget)
 
 import design_workbook_check as core
+
+try:                                    # the DT icon embedded as data (branding/dt_icon_data.py)
+    from branding.dt_icon_data import PNGS as EMBEDDED_ICON
+except ImportError:
+    EMBEDDED_ICON = {}
 
 APP_TITLE = "PAB Checker"
 # Design Team icon (built by branding/make_dt_icon.py)
@@ -619,12 +625,29 @@ class CheckerWindow(QMainWindow):
         QMessageBox.critical(self, APP_TITLE, "%s\n\n%s: %s" % (msg, type(exc).__name__, exc))
 
 
+def embedded_icon():
+    """The DT icon from the embedded PNGs - nothing on disk needed, so it also
+    works inside a PyInstaller .exe however it was built."""
+    icon = QIcon()
+    for size, data in sorted(EMBEDDED_ICON.items()):
+        pm = QPixmap()
+        if pm.loadFromData(base64.b64decode("".join(data)), "PNG"):
+            icon.addPixmap(pm)
+    return icon
+
+
 def load_icon(app):
     """Set the Design Team icon; say where it looked if it can't be loaded.
+
+    The embedded copy is used first; the files in the branding folder are a fallback.
 
     The .ico is tried first, but Qt reads .ico through a plugin that a PyInstaller
     build doesn't always include; then the icon comes out blank (Windows shows a
     generic one).  availableSizes() is empty in that case, so the PNGs are used."""
+    icon = embedded_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
+        return True
     for folder in branding_dirs():
         ico = os.path.join(folder, ICON_ICO)
         if os.path.isfile(ico):

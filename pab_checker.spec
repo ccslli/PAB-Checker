@@ -35,12 +35,15 @@ def keep(entry):
     return True
 
 
+import os
+HERE = SPECPATH                   # folder of this .spec file (set by PyInstaller)
+
 a = Analysis(
-    ["pab_checker_gui.py"],
-    pathex=[],
+    [os.path.join(HERE, "pab_checker_gui.py")],
+    pathex=[HERE],
     binaries=[],
-    datas=[("branding", "branding")],
-    hiddenimports=[],
+    datas=[(os.path.join(HERE, "branding"), "branding")],
+    hiddenimports=["branding.dt_icon_data"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -65,5 +68,5 @@ exe = EXE(
     upx=False,
     runtime_tmpdir=None,
     console=False,
-    icon="branding\\dt_icon.ico",
+    icon=os.path.join(HERE, "branding", "dt_icon.ico"),
 )
