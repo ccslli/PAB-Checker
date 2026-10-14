@@ -2108,9 +2108,18 @@ def qa_xlsx_files(folder):
                   and os.path.isfile(os.path.join(folder, f)))
 
 
-def qa_folder_ready(folder):
-    """The DOE QA script expects exactly one .xlsx in its folder.  Keep checking
-    until that is true, or the user chooses to exit.  -> True to go ahead."""
+def same_workbook(found, checked_name):
+    """Is the file in the DOE QA folder the workbook that was checked?
+    Compared by file name, ignoring upper/lower case and the extension."""
+    def stem(n):
+        return os.path.splitext(os.path.basename(str(n)))[0].strip().lower()
+    return stem(found) == stem(checked_name)
+
+
+def qa_folder_ready(folder, checked_name=None):
+    """The DOE QA script expects exactly one .xlsx in its folder, normally the
+    workbook that was just checked.  Keep checking until that is true, or the
+    user chooses to go ahead / exit.  -> True to go ahead."""
     while True:
         try:
             files = qa_xlsx_files(folder)
@@ -2119,7 +2128,16 @@ def qa_folder_ready(folder):
             files = None
         if files is not None and len(files) == 1:
             print("Excel file found: %s" % files[0])
-            return True
+            if not checked_name or same_workbook(files[0], checked_name):
+                return True
+            print("This is not the workbook that was just checked (%s)." % checked_name)
+            answer = ask("Continue with this file? (y = continue, r = check the folder again, Enter = exit): ")
+            if answer == "y":
+                return True
+            if answer == "r":
+                continue
+            print("DOE QA script aborted.")
+            return False
         if files is not None:
             if not files:
                 print("\nNo Excel file (.xlsx) was found in:\n  %s" % folder)
@@ -2132,11 +2150,11 @@ def qa_folder_ready(folder):
             return False
 
 
-def run_qa_script():
+def run_qa_script(checked_name=None):
     script = find_qa_script()
     if not script:
         return
-    if not qa_folder_ready(os.path.dirname(script)):
+    if not qa_folder_ready(os.path.dirname(script), checked_name):
         return
     print("\nRunning %s ...\n" % script)
     # same terminal, same Python; this script ends when the QA script ends
@@ -2154,20 +2172,24 @@ def check_workbook_report(wb):
 
 
 def check_workbook(wb):
-    print("\nReading %s ...\n" % wb.Name)
+    """Run the checks and print the results.  -> the workbook's file name."""
+    name = str(wb.Name)
+    print("\nReading %s ...\n" % name)
     rep = check_workbook_report(wb)
-    print("Workbook: %s" % wb.Name)
+    print("Workbook: %s" % name)
     print(rep.render(tab_order()))
+    return name
 
 
 def main():
     wb = None
+    checked_name = None                        # file name of the workbook last checked
     try:
         wb = select_or_open_workbook()
         if wb is None:
             print("No workbook selected.")
         else:
-            check_workbook(wb)
+            checked_name = check_workbook(wb)
     except Exception:
         traceback.print_exc()
     while True:
@@ -2180,12 +2202,12 @@ def main():
                 if wb is None:
                     print("No workbook selected.")
                 else:
-                    check_workbook(wb)         # same workbook, read again as it is now
+                    checked_name = check_workbook(wb)   # same workbook, read again as it is now
             except Exception:
                 traceback.print_exc()
                 wb = None                      # e.g. workbook was closed - ask again next time
         elif choice == "q":
-            run_qa_script()
+            run_qa_script(checked_name)
             return 0
         else:
             return 0

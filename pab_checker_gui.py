@@ -424,6 +424,22 @@ class CheckerWindow(QMainWindow):
             return
         self.close()                            # the QA script carries on in its own window
 
+    def _choose(self, text, labels):
+        """Question box with custom button labels -> the label clicked (last one = cancel)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(APP_TITLE)
+        box.setText(text)
+        buttons = {}
+        for i, label in enumerate(labels):
+            role = (QMessageBox.ButtonRole.RejectRole if i == len(labels) - 1
+                    else QMessageBox.ButtonRole.AcceptRole if i == 0 else QMessageBox.ButtonRole.ActionRole)
+            buttons[label] = box.addButton(label, role)
+        box.setDefaultButton(buttons[labels[0]])
+        box.exec()
+        clicked = box.clickedButton()
+        return next((label for label, b in buttons.items() if b is clicked), labels[-1])
+
     def _try_again(self):
         answer = QMessageBox.question(self, APP_TITLE, "DOE QA script aborted.\n\nTry again?",
                                       QMessageBox.StandardButton.Retry | QMessageBox.StandardButton.Cancel)
@@ -463,7 +479,25 @@ class CheckerWindow(QMainWindow):
             except OSError as exc:
                 files, problem = None, "Could not read the folder:\n%s\n\n%s" % (folder, exc)
             if files is not None and len(files) == 1:
-                return True
+                found = files[0]
+                if not self.checked_name or core.same_workbook(found, self.checked_name):
+                    note = ("This matches the workbook you just checked." if self.checked_name
+                            else "No workbook has been checked yet in this window.")
+                    if self._ask("Excel file found in the DOE QA folder:\n\n%s\n\n%s\n\n"
+                                 "Run the DOE QA script on this file?" % (found, note)):
+                        return True
+                    QMessageBox.information(self, APP_TITLE, "DOE QA script aborted.")
+                    return False
+                choice = self._choose(
+                    "Excel file found in the DOE QA folder:\n\n%s\n\nThis is not the workbook you just "
+                    "checked:\n\n%s\n\nDo you want to continue with this file?" % (found, self.checked_name),
+                    ["Continue", "Check folder again", "Cancel"])
+                if choice == "Continue":
+                    return True
+                if choice == "Check folder again":
+                    continue
+                QMessageBox.information(self, APP_TITLE, "DOE QA script aborted.")
+                return False
             if files is not None:
                 if not files:
                     problem = "No Excel file (.xlsx) was found in:\n%s" % folder
