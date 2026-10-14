@@ -44,14 +44,16 @@ THEMES = {
                   accent="#2563A6", highlight="#2563A6",
                   button="#2563A6", button_hover="#1E5290", button_border="#1E5290",
                   button_hover_border="#1E5290", button_disabled="#9DB6D3", button_disabled_text="#FFFFFF",
+                  hover_bg="#FFFFFF", hover_border="#2563A6", hover_text="#2563A6", focus_border="#2563A6",
                   green="#2E8B3E", amber="#C77700", red="#C62828", note_bar="#C3CCD5"),
     # neutral near-black (no blue tint), matched to the VS Code editor background
     "dark": dict(bg="#121314", surface="#18191B", ink="#E4E5E7", muted="#9A9EA4", rule="#2A2C2F",
                  border="#3A3D42", hover="#1F2124", select="#1F3247", pressed="#26282C",
                  disabled="#5C6067", disabled_border="#2A2C2F", statusbar="#0E0F10",
                  accent="#6EA8E6", highlight="#3474BD",
-                 button="#343433", button_hover="#3E3E3D", button_border="#55595F",
-                 button_hover_border="#6EA8E6", button_disabled="#2A2A29", button_disabled_text="#6A6E74",
+                 button="#2A2A29", button_hover="#343433", button_border="#55595F",
+                 button_hover_border="#55595F", button_disabled="#232322", button_disabled_text="#6A6E74",
+                 hover_bg="#343433", hover_border="#55595F", hover_text="#E4E5E7", focus_border="#8A8F96",
                  green="#57C46F", amber="#F2A541", red="#F26B60", note_bar="#3A3D42"),
 }
 # current colours (set by apply_theme; read by the window when it draws)
@@ -69,7 +71,7 @@ QComboBox {{
     background: {surface}; border: 1px solid {border}; border-radius: 4px;
     padding: 5px 10px; min-height: 22px;
 }}
-QComboBox:hover, QComboBox:focus {{ border-color: {accent}; }}
+QComboBox:hover, QComboBox:focus {{ border-color: {focus_border}; }}
 QComboBox QAbstractItemView {{
     background: {surface}; border: 1px solid {border};
     selection-background-color: {select}; selection-color: {ink};
@@ -78,8 +80,8 @@ QPushButton {{
     background: {surface}; border: 1px solid {border}; border-radius: 4px;
     padding: 6px 16px; min-height: 22px;
 }}
-QPushButton:hover {{ border-color: {accent}; color: {accent}; }}
-QPushButton:focus {{ border-color: {accent}; }}
+QPushButton:focus {{ border-color: {focus_border}; }}
+QPushButton:hover {{ background: {hover_bg}; border-color: {hover_border}; color: {hover_text}; }}
 QPushButton:pressed {{ background: {pressed}; }}
 QPushButton:disabled {{ color: {disabled}; border-color: {disabled_border}; }}
 QPushButton#primary {{
