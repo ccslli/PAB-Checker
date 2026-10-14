@@ -23,9 +23,9 @@ import sys
 import traceback
 from datetime import datetime
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QSettings, QTimer, Qt
 from PySide6.QtGui import (QBrush, QColor, QCursor, QGuiApplication, QIcon, QKeySequence,
-                           QPainter, QPen, QPixmap, QRadialGradient, QShortcut)
+                           QPainter, QPalette, QPen, QPixmap, QRadialGradient, QShortcut)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
                                QHeaderView, QLabel, QMainWindow, QMessageBox, QPushButton,
                                QSizePolicy, QSplitter, QTextBrowser, QTreeWidget, QTreeWidgetItem,
@@ -36,17 +36,21 @@ import design_workbook_check as core
 APP_TITLE = "PAB Checker"
 PLACEHOLDER = "Select a workbook..."
 
-# ---- palette: rack-panel greys, Cat6-blue accent, port-LED status colours ----
-BG = "#EEF1F4"
-SURFACE = "#FFFFFF"
-INK = "#1C2733"
-MUTED = "#5B6876"
-RULE = "#D3DAE1"
-ACCENT = "#2563A6"
-ACCENT_DARK = "#1E5290"
-GREEN = "#2E8B3E"
-AMBER = "#C77700"
-RED = "#C62828"
+# ---- palettes: rack-panel greys, Cat6-blue accent, port-LED status colours ----
+THEMES = {
+    "light": dict(bg="#EEF1F4", surface="#FFFFFF", ink="#1C2733", muted="#5B6876", rule="#D3DAE1",
+                  border="#C3CCD5", hover="#F3F6F9", select="#E3EDF8", pressed="#E3EAF2",
+                  disabled="#9AA5B1", disabled_border="#DDE3E8", statusbar="#E4E8EC",
+                  accent="#2563A6", button="#2563A6", button_hover="#1E5290", button_disabled="#9DB6D3",
+                  green="#2E8B3E", amber="#C77700", red="#C62828", note_bar="#C3CCD5"),
+    "dark": dict(bg="#1B222B", surface="#232C36", ink="#E3E9EF", muted="#97A4B2", rule="#34404C",
+                 border="#435160", hover="#2A3540", select="#2D4361", pressed="#2F3B48",
+                 disabled="#5E6B78", disabled_border="#34404C", statusbar="#161C23",
+                 accent="#6EA8E6", button="#3474BD", button_hover="#2B63A3", button_disabled="#33475F",
+                 green="#57C46F", amber="#F2A541", red="#F26B60", note_bar="#4A5765"),
+}
+# current colours (set by apply_theme; read by the window when it draws)
+SURFACE = INK = MUTED = GREEN = AMBER = RED = NOTE_BAR = ""
 
 LABEL_FONT = "Bahnschrift, 'Segoe UI Semibold', 'Segoe UI', sans-serif"   # DIN-style, ships with Windows
 BODY_FONT = "'Segoe UI', sans-serif"
@@ -57,43 +61,78 @@ QWidget {{ font-family: "Segoe UI"; font-size: 10pt; color: {ink}; }}
 QLabel#fieldLabel {{ color: {muted}; font-weight: 600; }}
 QLabel#status {{ color: {muted}; }}
 QComboBox {{
-    background: {surface}; border: 1px solid #C3CCD5; border-radius: 4px;
+    background: {surface}; border: 1px solid {border}; border-radius: 4px;
     padding: 5px 10px; min-height: 22px;
 }}
 QComboBox:hover, QComboBox:focus {{ border-color: {accent}; }}
 QComboBox QAbstractItemView {{
-    background: {surface}; border: 1px solid #C3CCD5;
-    selection-background-color: #E3EDF8; selection-color: {ink};
+    background: {surface}; border: 1px solid {border};
+    selection-background-color: {select}; selection-color: {ink};
 }}
 QPushButton {{
-    background: {surface}; border: 1px solid #C3CCD5; border-radius: 4px;
+    background: {surface}; border: 1px solid {border}; border-radius: 4px;
     padding: 6px 16px; min-height: 22px;
 }}
 QPushButton:hover {{ border-color: {accent}; color: {accent}; }}
 QPushButton:focus {{ border-color: {accent}; }}
-QPushButton:pressed {{ background: #E3EAF2; }}
-QPushButton:disabled {{ color: #9AA5B1; border-color: #DDE3E8; }}
+QPushButton:pressed {{ background: {pressed}; }}
+QPushButton:disabled {{ color: {disabled}; border-color: {disabled_border}; }}
 QPushButton#primary {{
-    background: {accent}; color: white; border: 1px solid {accent_dark}; font-weight: 600;
+    background: {button}; color: white; border: 1px solid {button_hover}; font-weight: 600;
 }}
-QPushButton#primary:hover {{ background: {accent_dark}; color: white; }}
-QPushButton#primary:disabled {{ background: #9DB6D3; border-color: #9DB6D3; color: white; }}
+QPushButton#primary:hover {{ background: {button_hover}; color: white; }}
+QPushButton#primary:disabled {{ background: {button_disabled}; border-color: {button_disabled}; color: white; }}
 QTreeWidget, QTextBrowser {{
     background: {surface}; border: 1px solid {rule}; border-radius: 6px;
 }}
 QTreeWidget {{ padding: 4px 0; outline: 0; }}
 QTreeWidget::item {{ padding: 6px 4px; border: none; }}
-QTreeWidget::item:hover {{ background: #F3F6F9; }}
-QTreeWidget::item:selected {{ background: #E3EDF8; color: {ink}; }}
+QTreeWidget::item:hover {{ background: {hover}; }}
+QTreeWidget::item:selected {{ background: {select}; color: {ink}; }}
 QHeaderView::section {{
     background: {surface}; border: none; border-bottom: 1px solid {rule};
     padding: 4px 8px 8px 8px; color: {muted}; font-weight: 600;
 }}
 QCheckBox {{ color: {muted}; spacing: 6px; }}
 QSplitter::handle {{ background: transparent; }}
-QStatusBar {{ background: #E4E8EC; color: {muted}; border-top: 1px solid {rule}; }}
-""".format(bg=BG, surface=SURFACE, ink=INK, muted=MUTED, rule=RULE,
-           accent=ACCENT, accent_dark=ACCENT_DARK)
+QStatusBar {{ background: {statusbar}; color: {muted}; border-top: 1px solid {rule}; }}
+QToolTip {{ background: {surface}; color: {ink}; border: 1px solid {border}; }}
+"""
+
+
+def apply_theme(app, name):
+    """Switch the whole application between the light and dark palettes."""
+    t = THEMES[name]
+    g = globals()
+    for key, var in (("surface", "SURFACE"), ("ink", "INK"), ("muted", "MUTED"), ("green", "GREEN"),
+                     ("amber", "AMBER"), ("red", "RED"), ("note_bar", "NOTE_BAR")):
+        g[var] = t[key]
+    # the Qt palette covers the parts the style sheet doesn't reach
+    # (message boxes, scroll bars, menus)
+    pal = QPalette()
+    for role, key in ((QPalette.ColorRole.Window, "bg"), (QPalette.ColorRole.WindowText, "ink"),
+                      (QPalette.ColorRole.Base, "surface"), (QPalette.ColorRole.AlternateBase, "hover"),
+                      (QPalette.ColorRole.Text, "ink"), (QPalette.ColorRole.Button, "surface"),
+                      (QPalette.ColorRole.ButtonText, "ink"), (QPalette.ColorRole.ToolTipBase, "surface"),
+                      (QPalette.ColorRole.ToolTipText, "ink"), (QPalette.ColorRole.PlaceholderText, "muted"),
+                      (QPalette.ColorRole.Highlight, "button"), (QPalette.ColorRole.Link, "accent")):
+        pal.setColor(role, QColor(t[key]))
+    pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+    for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText):
+        pal.setColor(QPalette.ColorGroup.Disabled, role, QColor(t["disabled"]))
+    app.setPalette(pal)
+    app.setStyleSheet(STYLE.format(**t))
+
+
+def saved_dark_mode(settings):
+    """The saved choice, or Windows' own light/dark setting the first time."""
+    value = settings.value("dark_mode", None)
+    if value is None:
+        try:
+            return QGuiApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark
+        except Exception:                       # Qt older than 6.5
+            return False
+    return str(value).lower() in ("true", "1")
 
 
 def led_icon(color, size=14):
@@ -132,7 +171,8 @@ class CheckerWindow(QMainWindow):
         self.report = None
         self.checked_name = ""
         self.checked_at = None
-        self.leds = {k: led_icon(c) for k, c in (("error", RED), ("warn", AMBER), ("ok", GREEN))}
+        self.settings = QSettings("PAB Checker", "PAB Checker")
+        self._make_leds()
 
         self.setWindowTitle(APP_TITLE)
         self.resize(1180, 760)
@@ -181,10 +221,15 @@ class CheckerWindow(QMainWindow):
         self.btn_copy.clicked.connect(self.copy_results)
         self.only_issues = QCheckBox("Only show tabs with issues")
         self.only_issues.toggled.connect(self._redraw)
+        self.dark = QCheckBox("Dark mode")
+        self.dark.setChecked(INK == THEMES["dark"]["ink"])
+        self.dark.toggled.connect(self.set_dark_mode)
         row2.addWidget(self.btn_run)
         row2.addWidget(self.btn_qa)
         row2.addStretch(1)
         row2.addWidget(self.only_issues)
+        row2.addSpacing(12)
+        row2.addWidget(self.dark)
         row2.addSpacing(12)
         row2.addWidget(self.btn_copy)
         outer.addLayout(row2)
@@ -220,6 +265,18 @@ class CheckerWindow(QMainWindow):
         self.status.setObjectName("status")
         self.statusBar().addWidget(self.status, 1)
         self._empty_state()
+
+    def _make_leds(self):
+        self.leds = {k: led_icon(c) for k, c in (("error", RED), ("warn", AMBER), ("ok", GREEN))}
+
+    def set_dark_mode(self, on):
+        apply_theme(QApplication.instance(), "dark" if on else "light")
+        self.settings.setValue("dark_mode", bool(on))
+        self._make_leds()
+        if self.report is not None:
+            self._redraw()
+        else:
+            self._empty_state()
 
     def _empty_state(self):
         self.summary.setText('<span style="font-family:%s; font-size:15pt; color:%s">'
@@ -383,7 +440,7 @@ class CheckerWindow(QMainWindow):
         bar, label, text_color = {
             "ERROR": (RED, "Error", INK),
             "WARN": (AMBER, "Warning", INK),
-            "NOTE": ("#C3CCD5", "", MUTED),
+            "NOTE": (NOTE_BAR, "", MUTED),
             "OK": (GREEN, "", GREEN),
         }[level]
         lead = ('<span style="color:%s; font-weight:600">%s</span>&nbsp;&nbsp;' % (bar, label)) if label else ""
@@ -534,7 +591,7 @@ class CheckerWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    app.setStyleSheet(STYLE)
+    apply_theme(app, "dark" if saved_dark_mode(QSettings("PAB Checker", "PAB Checker")) else "light")
     if core.pythoncom is None or core.xw is None:
         QMessageBox.critical(None, APP_TITLE, "pywin32 and xlwings are needed.\n\n"
                              "Run:  pip install pywin32 xlwings")
