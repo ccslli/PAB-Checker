@@ -41,13 +41,17 @@ THEMES = {
     "light": dict(bg="#EEF1F4", surface="#FFFFFF", ink="#1C2733", muted="#5B6876", rule="#D3DAE1",
                   border="#C3CCD5", hover="#F3F6F9", select="#E3EDF8", pressed="#E3EAF2",
                   disabled="#9AA5B1", disabled_border="#DDE3E8", statusbar="#E4E8EC",
-                  accent="#2563A6", button="#2563A6", button_hover="#1E5290", button_disabled="#9DB6D3",
+                  accent="#2563A6", highlight="#2563A6",
+                  button="#2563A6", button_hover="#1E5290", button_border="#1E5290",
+                  button_hover_border="#1E5290", button_disabled="#9DB6D3", button_disabled_text="#FFFFFF",
                   green="#2E8B3E", amber="#C77700", red="#C62828", note_bar="#C3CCD5"),
     # neutral near-black (no blue tint), matched to the VS Code editor background
     "dark": dict(bg="#121314", surface="#18191B", ink="#E4E5E7", muted="#9A9EA4", rule="#2A2C2F",
                  border="#3A3D42", hover="#1F2124", select="#1F3247", pressed="#26282C",
                  disabled="#5C6067", disabled_border="#2A2C2F", statusbar="#0E0F10",
-                 accent="#6EA8E6", button="#3474BD", button_hover="#2B63A3", button_disabled="#263548",
+                 accent="#6EA8E6", highlight="#3474BD",
+                 button="#191A1B", button_hover="#232428", button_border="#4A4E54",
+                 button_hover_border="#6EA8E6", button_disabled="#191A1B", button_disabled_text="#5C6067",
                  green="#57C46F", amber="#F2A541", red="#F26B60", note_bar="#3A3D42"),
 }
 # current colours (set by apply_theme; read by the window when it draws)
@@ -79,10 +83,12 @@ QPushButton:focus {{ border-color: {accent}; }}
 QPushButton:pressed {{ background: {pressed}; }}
 QPushButton:disabled {{ color: {disabled}; border-color: {disabled_border}; }}
 QPushButton#primary {{
-    background: {button}; color: white; border: 1px solid {button_hover}; font-weight: 600;
+    background: {button}; color: white; border: 1px solid {button_border}; font-weight: 600;
 }}
-QPushButton#primary:hover {{ background: {button_hover}; color: white; }}
-QPushButton#primary:disabled {{ background: {button_disabled}; border-color: {button_disabled}; color: white; }}
+QPushButton#primary:hover {{ background: {button_hover}; border-color: {button_hover_border}; color: white; }}
+QPushButton#primary:disabled {{
+    background: {button_disabled}; border-color: {disabled_border}; color: {button_disabled_text};
+}}
 QTreeWidget, QTextBrowser {{
     background: {surface}; border: 1px solid {rule}; border-radius: 6px;
 }}
@@ -118,7 +124,7 @@ def apply_theme(app, name):
                       (QPalette.ColorRole.Text, "ink"), (QPalette.ColorRole.Button, "surface"),
                       (QPalette.ColorRole.ButtonText, "ink"), (QPalette.ColorRole.ToolTipBase, "surface"),
                       (QPalette.ColorRole.ToolTipText, "ink"), (QPalette.ColorRole.PlaceholderText, "muted"),
-                      (QPalette.ColorRole.Highlight, "button"), (QPalette.ColorRole.Link, "accent")):
+                      (QPalette.ColorRole.Highlight, "highlight"), (QPalette.ColorRole.Link, "accent")):
         pal.setColor(role, QColor(t[key]))
     pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
     for role in (QPalette.ColorRole.WindowText, QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText):
