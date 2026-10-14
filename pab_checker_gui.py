@@ -206,18 +206,24 @@ def esc(text):
 
 class PortLights(QWidget):
     """Loading animation: a row of port lights blinking in sequence, like link
-    activity on a switch."""
+    activity on a switch.  The row fills whatever width it is given."""
 
-    def __init__(self, count=8, parent=None):
+    SLOT = 24                           # space per light
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.count, self.step = count, 0
-        self.setFixedSize(count * 24, 24)
+        self.step = 0
+        self.setFixedHeight(24)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(85)
 
+    def _count(self):
+        return max(6, self.width() // self.SLOT)
+
     def _tick(self):
-        self.step = (self.step + 1) % self.count
+        self.step += 1
         self.update()
 
     def stop(self):
@@ -228,9 +234,12 @@ class PortLights(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
         on, off = QColor(ACCENT), QColor(NOTE_BAR)
-        for i in range(self.count):
-            level = max(0.0, 1.0 - ((self.step - i) % self.count) / 3.0)   # lit light + fading trail
-            x = i * 24 + 6
+        n = self._count()
+        span = self.width() - 12 - 8                # first light at the left edge, last at the right
+        lit = self.step % n
+        for i in range(n):
+            level = max(0.0, 1.0 - ((lit - i) % n) / 3.0)                   # lit light + fading trail
+            x = 4 + i * span / (n - 1)
             if level > 0.5:                                                  # soft glow round the lit one
                 p.setBrush(QColor(on.red(), on.green(), on.blue(), int(60 * level)))
                 p.drawEllipse(QRectF(x - 4, 2, 20, 20))
