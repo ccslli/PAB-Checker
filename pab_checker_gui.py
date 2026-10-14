@@ -43,11 +43,12 @@ THEMES = {
                   disabled="#9AA5B1", disabled_border="#DDE3E8", statusbar="#E4E8EC",
                   accent="#2563A6", button="#2563A6", button_hover="#1E5290", button_disabled="#9DB6D3",
                   green="#2E8B3E", amber="#C77700", red="#C62828", note_bar="#C3CCD5"),
-    "dark": dict(bg="#1B222B", surface="#232C36", ink="#E3E9EF", muted="#97A4B2", rule="#34404C",
-                 border="#435160", hover="#2A3540", select="#2D4361", pressed="#2F3B48",
-                 disabled="#5E6B78", disabled_border="#34404C", statusbar="#161C23",
-                 accent="#6EA8E6", button="#3474BD", button_hover="#2B63A3", button_disabled="#33475F",
-                 green="#57C46F", amber="#F2A541", red="#F26B60", note_bar="#4A5765"),
+    # neutral near-black (no blue tint), matched to the VS Code editor background
+    "dark": dict(bg="#121314", surface="#18191B", ink="#E4E5E7", muted="#9A9EA4", rule="#2A2C2F",
+                 border="#3A3D42", hover="#1F2124", select="#1F3247", pressed="#26282C",
+                 disabled="#5C6067", disabled_border="#2A2C2F", statusbar="#0E0F10",
+                 accent="#6EA8E6", button="#3474BD", button_hover="#2B63A3", button_disabled="#263548",
+                 green="#57C46F", amber="#F2A541", red="#F26B60", note_bar="#3A3D42"),
 }
 # current colours (set by apply_theme; read by the window when it draws)
 SURFACE = INK = MUTED = GREEN = AMBER = RED = NOTE_BAR = ""
