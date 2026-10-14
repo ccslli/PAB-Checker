@@ -129,6 +129,9 @@ WDATA_TAG_CELL = "P5"            # network tag: borough + 1 (odd rack ID) / 2 (e
 WDATA_RACK_CELL = "A2"           # rack ID, e.g. 26Q216
 BOROUGHS = OrderedDict([("Q", "Queens"), ("B", "Brooklyn"), ("M", "Manhattan"),
                         ("R", "Staten Island"), ("X", "Bronx")])
+# exact spelling of the network tag (before the 1 / 2); the client wants a capital I
+# in statenIsland, everything else lower case
+NETWORK_TAGS = {"Q": "queens", "B": "brooklyn", "M": "manhattan", "R": "statenIsland", "X": "bronx"}
 
 # ---- Wireless_Equipment_List ------------------------------------------------
 WEQUIP_MODEL_COL = "B"
@@ -1441,9 +1444,8 @@ def check_network_tags(g, rep):
         rep.error(T, "RACK ID '%s' (cell %s) does not match template - network tag was not checked."
                   % (rack or "blank", WDATA_RACK_CELL))
         return
-    borough = BOROUGHS[m.group(1)]
     want = "1" if int(m.group(2)) % 2 else "2"
-    expected = re.sub(r"[^a-z]", "", borough.lower()) + want      # e.g. bronx2, statenisland1
+    expected = NETWORK_TAGS[m.group(1)] + want                    # e.g. bronx2, statenIsland1
     tag = clean(g.at(WDATA_TAG_CELL))
     if tag != expected:
         rep.error(T, "Network tag '%s' should be %s - rack ID %s is %s."
