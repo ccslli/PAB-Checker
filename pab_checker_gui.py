@@ -97,6 +97,8 @@ QHeaderView::section {{
 QCheckBox {{ color: {muted}; spacing: 6px; }}
 QSplitter::handle {{ background: transparent; }}
 QStatusBar {{ background: {statusbar}; color: {muted}; border-top: 1px solid {rule}; }}
+QStatusBar::item {{ border: none; }}
+QStatusBar QCheckBox {{ padding: 2px 10px 2px 4px; }}
 QToolTip {{ background: {surface}; color: {ink}; border: 1px solid {border}; }}
 """
 
@@ -230,8 +232,6 @@ class CheckerWindow(QMainWindow):
         row2.addStretch(1)
         row2.addWidget(self.only_issues)
         row2.addSpacing(12)
-        row2.addWidget(self.dark)
-        row2.addSpacing(12)
         row2.addWidget(self.btn_copy)
         outer.addLayout(row2)
 
@@ -265,6 +265,7 @@ class CheckerWindow(QMainWindow):
         self.status = QLabel()
         self.status.setObjectName("status")
         self.statusBar().addWidget(self.status, 1)
+        self.statusBar().addPermanentWidget(self.dark)          # bottom right corner
         self._empty_state()
 
     def _make_leds(self):
