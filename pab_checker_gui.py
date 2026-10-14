@@ -40,7 +40,8 @@ import design_workbook_check as core
 
 APP_TITLE = "PAB Checker"
 # Design Team icon (built by branding/make_dt_icon.py)
-ICON_FILES = ("dt_icon.ico", "dt_icon_256.png")
+ICON_ICO = "dt_icon.ico"
+ICON_PNGS = ("dt_icon_256.png", "dt_icon_1024.png")
 
 
 def branding_dirs():
@@ -619,16 +620,26 @@ class CheckerWindow(QMainWindow):
 
 
 def load_icon(app):
-    """Set the Design Team icon; say where it looked if it can't be loaded."""
+    """Set the Design Team icon; say where it looked if it can't be loaded.
+
+    The .ico is tried first, but Qt reads .ico through a plugin that a PyInstaller
+    build doesn't always include; then the icon comes out blank (Windows shows a
+    generic one).  availableSizes() is empty in that case, so the PNGs are used."""
     for folder in branding_dirs():
-        for name in ICON_FILES:
+        ico = os.path.join(folder, ICON_ICO)
+        if os.path.isfile(ico):
+            icon = QIcon(ico)
+            if icon.availableSizes():
+                app.setWindowIcon(icon)
+                return True
+        icon = QIcon()
+        for name in ICON_PNGS:
             path = os.path.join(folder, name)
             if os.path.isfile(path):
-                icon = QIcon(path)
-                if not icon.isNull():
-                    app.setWindowIcon(icon)
-                    return True
-                print("Icon file could not be read: %s" % path)
+                icon.addFile(path)
+        if not icon.isNull():
+            app.setWindowIcon(icon)
+            return True
     print("Design Team icon not found. Looked for the 'branding' folder in:\n  %s"
           % "\n  ".join(branding_dirs()))
     return False
