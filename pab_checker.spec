@@ -8,7 +8,7 @@
 #   - Qt's software OpenGL driver, translations, and unused image/style plugins
 
 EXCLUDES = [
-    "numpy", "pandas", "matplotlib", "scipy", "PIL", "tkinter",
+    "numpy", "pandas", "matplotlib", "scipy", "PIL",   # (tkinter stays: the splash screen uses Tcl/Tk)
     "IPython", "jupyter_client", "notebook", "pytest",
 ]
 
@@ -55,9 +55,26 @@ a.datas = [d for d in a.datas if keep(d)]
 
 pyz = PYZ(a.pure)
 
+# Start-up splash: shown straight away while the one-file .exe unpacks itself,
+# with PyInstaller's status text in the strip along the bottom.  The window
+# closes it once it's open (pyi_splash in pab_checker_gui.py).
+splash = Splash(
+    os.path.join(HERE, "branding", "splash_pab_checker.png"),
+    binaries=a.binaries,
+    datas=a.datas,
+    text_pos=(22, 226),
+    text_size=9,
+    text_font="Segoe UI",
+    text_color="#9AA7B4",
+    text_default="Starting PAB Checker...",
+    minify_script=True,
+)
+
 exe = EXE(
     pyz,
     a.scripts,
+    splash,
+    splash.binaries,
     a.binaries,
     a.datas,
     [],

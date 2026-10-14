@@ -867,6 +867,23 @@ def load_icon(app):
     return False
 
 
+def splash_text(text):
+    """Update the start-up splash of a PyInstaller .exe (no-op when run as .py)."""
+    try:
+        import pyi_splash
+        pyi_splash.update_text(text)
+    except Exception:
+        pass
+
+
+def close_splash():
+    try:
+        import pyi_splash
+        pyi_splash.close()
+    except Exception:
+        pass
+
+
 def main():
     if sys.platform == "win32":
         # Without this, Windows groups the window under python.exe in the taskbar and
@@ -881,11 +898,14 @@ def main():
     load_icon(app)
     apply_theme(app, "dark" if saved_dark_mode(QSettings("PAB Checker", "PAB Checker")) else "light")
     if core.pythoncom is None or core.xw is None:
+        close_splash()
         QMessageBox.critical(None, APP_TITLE, "pywin32 and xlwings are needed.\n\n"
                              "Run:  pip install pywin32 xlwings")
         return 1
+    splash_text("Opening the window...")
     win = CheckerWindow()
     win.show()
+    close_splash()
     return app.exec()
 
 
