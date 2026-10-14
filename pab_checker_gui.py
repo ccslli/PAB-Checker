@@ -15,6 +15,10 @@ Usage (Windows, Excel installed):
     python pab_checker_gui.py
 
 Rename it to pab_checker_gui.pyw to start it without a console window.
+
+To build PAB Checker.exe, run build_exe.bat (or the PyInstaller command in it).
+The branding folder is packed into the .exe, and the DOE QA script is run with
+the Python installed on the PC.
 """
 
 import html
@@ -35,9 +39,19 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, 
 import design_workbook_check as core
 
 APP_TITLE = "PAB Checker"
-# Design Team icon (built by branding/make_dt_icon.py), looked for next to this file
-BRANDING_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "branding")
+# Design Team icon (built by branding/make_dt_icon.py)
 ICON_FILES = ("dt_icon.ico", "dt_icon_256.png")
+
+
+def branding_dirs():
+    """Where the branding folder can be: bundled inside a PyInstaller .exe
+    (--add-data), next to the .exe, or next to this .py file."""
+    dirs = []
+    if getattr(sys, "frozen", False):
+        dirs.append(os.path.join(getattr(sys, "_MEIPASS", ""), "branding"))
+        dirs.append(os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "branding"))
+    dirs.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "branding"))
+    return dirs
 PLACEHOLDER = "Select a workbook..."
 
 # ---- palettes: rack-panel greys, Cat6-blue accent, port-LED status colours ----
@@ -484,12 +498,14 @@ class CheckerWindow(QMainWindow):
         script = self._find_qa_script()
         if not script or not self._qa_folder_ready(os.path.dirname(script)):
             return
-        python = sys.executable
-        if os.path.basename(python).lower() == "pythonw.exe":      # the QA script needs a console
-            python = os.path.join(os.path.dirname(python), "python.exe")
+        python = core.python_for_scripts()      # an .exe can't run .py files itself
+        if not python:
+            QMessageBox.warning(self, APP_TITLE, "Python was not found on this PC, so the DOE QA script "
+                                "can't be started from here.\n\nRun it from VS Code or a terminal instead.")
+            return
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         try:
-            subprocess.Popen([python, script], cwd=os.path.dirname(script), creationflags=flags)
+            subprocess.Popen(python + [script], cwd=os.path.dirname(script), creationflags=flags)
         except Exception as exc:
             self._error("Could not start the DOE QA script.", exc)
             return
@@ -604,15 +620,17 @@ class CheckerWindow(QMainWindow):
 
 def load_icon(app):
     """Set the Design Team icon; say where it looked if it can't be loaded."""
-    for name in ICON_FILES:
-        path = os.path.join(BRANDING_DIR, name)
-        if os.path.isfile(path):
-            icon = QIcon(path)
-            if not icon.isNull():
-                app.setWindowIcon(icon)
-                return True
-            print("Icon file could not be read: %s" % path)
-    print("Design Team icon not found. Expected the 'branding' folder here:\n  %s" % BRANDING_DIR)
+    for folder in branding_dirs():
+        for name in ICON_FILES:
+            path = os.path.join(folder, name)
+            if os.path.isfile(path):
+                icon = QIcon(path)
+                if not icon.isNull():
+                    app.setWindowIcon(icon)
+                    return True
+                print("Icon file could not be read: %s" % path)
+    print("Design Team icon not found. Looked for the 'branding' folder in:\n  %s"
+          % "\n  ".join(branding_dirs()))
     return False
 
 

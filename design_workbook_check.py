@@ -24,6 +24,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import traceback
@@ -2150,15 +2151,35 @@ def qa_folder_ready(folder, checked_name=None):
             return False
 
 
+def python_for_scripts():
+    """Command that runs a .py file.  Normally the Python running this script; in a
+    PyInstaller .exe that is the .exe itself, so look for Python on the PC instead.
+    -> list such as ['C:\\...\\python.exe'] or ['C:\\Windows\\py.exe', '-3'], or None."""
+    if not getattr(sys, "frozen", False):
+        exe = sys.executable
+        if os.path.basename(exe).lower() == "pythonw.exe":       # the QA script needs a console
+            exe = os.path.join(os.path.dirname(exe), "python.exe")
+        return [exe]
+    for cmd in (["python"], ["py", "-3"]):
+        found = shutil.which(cmd[0])
+        if found and "windowsapps" not in found.lower():         # skip the Microsoft Store stub
+            return [found] + cmd[1:]
+    return None
+
+
 def run_qa_script(checked_name=None):
     script = find_qa_script()
     if not script:
         return
     if not qa_folder_ready(os.path.dirname(script), checked_name):
         return
+    python = python_for_scripts()
+    if not python:
+        print("Python was not found on this PC, so the DOE QA script can't be run from here.")
+        return
     print("\nRunning %s ...\n" % script)
-    # same terminal, same Python; this script ends when the QA script ends
-    subprocess.call([sys.executable, script], cwd=os.path.dirname(script))
+    # same terminal; this script ends when the QA script ends
+    subprocess.call(python + [script], cwd=os.path.dirname(script))
 
 
 def tab_order():
