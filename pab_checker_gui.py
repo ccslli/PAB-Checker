@@ -26,13 +26,14 @@ import html
 import os
 import subprocess
 import sys
+import time
 import traceback
 from datetime import datetime
 
-from PySide6.QtCore import QSettings, QTimer, Qt
+from PySide6.QtCore import QRectF, QSettings, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import (QBrush, QColor, QCursor, QGuiApplication, QIcon, QKeySequence,
                            QPainter, QPalette, QPen, QPixmap, QRadialGradient, QShortcut)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout,
                                QHeaderView, QLabel, QMainWindow, QMessageBox, QPushButton,
                                QSizePolicy, QSplitter, QTextBrowser, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
@@ -82,7 +83,7 @@ THEMES = {
                  green="#57C46F", amber="#F2A541", red="#F26B60", note_bar="#3A3D42"),
 }
 # current colours (set by apply_theme; read by the window when it draws)
-SURFACE = INK = MUTED = GREEN = AMBER = RED = NOTE_BAR = ""
+SURFACE = INK = MUTED = GREEN = AMBER = RED = NOTE_BAR = ACCENT = ""
 
 LABEL_FONT = "Bahnschrift, 'Segoe UI Semibold', 'Segoe UI', sans-serif"   # DIN-style, ships with Windows
 BODY_FONT = "'Segoe UI', sans-serif"
@@ -133,6 +134,10 @@ QStatusBar {{ background: {statusbar}; color: {muted}; border-top: 1px solid {ru
 QStatusBar::item {{ border: none; }}
 QStatusBar QCheckBox {{ padding: 2px 10px 2px 4px; }}
 QToolTip {{ background: {surface}; color: {ink}; border: 1px solid {border}; }}
+QFrame#loaderCard {{ background: {surface}; border: 1px solid {border}; border-radius: 10px; }}
+QLabel#loaderTitle {{ font-family: "Bahnschrift"; font-size: 14pt; color: {ink}; }}
+QLabel#loaderFile, QLabel#loaderElapsed {{ color: {muted}; }}
+QLabel#loaderStep {{ color: {ink}; }}
 """
 
 
@@ -141,7 +146,8 @@ def apply_theme(app, name):
     t = THEMES[name]
     g = globals()
     for key, var in (("surface", "SURFACE"), ("ink", "INK"), ("muted", "MUTED"), ("green", "GREEN"),
-                     ("amber", "AMBER"), ("red", "RED"), ("note_bar", "NOTE_BAR")):
+                     ("amber", "AMBER"), ("red", "RED"), ("note_bar", "NOTE_BAR"),
+                     ("accent", "ACCENT")):
         g[var] = t[key]
     # the Qt palette covers the parts the style sheet doesn't reach
     # (message boxes, scroll bars, menus)
@@ -198,6 +204,143 @@ def esc(text):
     return "<br>".join(out)
 
 
+class PortLights(QWidget):
+    """Loading animation: a row of port lights blinking in sequence, like link
+    activity on a switch."""
+
+    def __init__(self, count=8, parent=None):
+        super().__init__(parent)
+        self.count, self.step = count, 0
+        self.setFixedSize(count * 24, 24)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(85)
+
+    def _tick(self):
+        self.step = (self.step + 1) % self.count
+        self.update()
+
+    def stop(self):
+        self.timer.stop()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        on, off = QColor(ACCENT), QColor(NOTE_BAR)
+        for i in range(self.count):
+            level = max(0.0, 1.0 - ((self.step - i) % self.count) / 3.0)   # lit light + fading trail
+            x = i * 24 + 6
+            if level > 0.5:                                                  # soft glow round the lit one
+                p.setBrush(QColor(on.red(), on.green(), on.blue(), int(60 * level)))
+                p.drawEllipse(QRectF(x - 4, 2, 20, 20))
+            c = QColor(int(off.red() + (on.red() - off.red()) * level),
+                       int(off.green() + (on.green() - off.green()) * level),
+                       int(off.blue() + (on.blue() - off.blue()) * level))
+            p.setBrush(c)
+            p.drawEllipse(QRectF(x, 6, 12, 12))
+        p.end()
+
+
+class LoaderDialog(QDialog):
+    """Small box shown while a workbook is checked: file name, current step,
+    port-light animation and a seconds counter.  Can't be dismissed by the user."""
+
+    def __init__(self, parent, name):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setModal(True)
+        self._finished = False
+        card = QFrame(self)
+        card.setObjectName("loaderCard")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(card)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(26, 22, 26, 20)
+        lay.setSpacing(8)
+        title = QLabel("Checking workbook")
+        title.setObjectName("loaderTitle")
+        self.file = QLabel()
+        self.file.setObjectName("loaderFile")
+        self.file.setText(self.file.fontMetrics().elidedText(name, Qt.TextElideMode.ElideMiddle, 360))
+        self.file.setToolTip(name)
+        self.lights = PortLights()
+        self.step = QLabel("Opening the workbook...")
+        self.step.setObjectName("loaderStep")
+        self.elapsed = QLabel("0 s")
+        self.elapsed.setObjectName("loaderElapsed")
+        row = QHBoxLayout()
+        row.addWidget(self.step, 1)
+        row.addWidget(self.elapsed)
+        lay.addWidget(title)
+        lay.addWidget(self.file)
+        lay.addSpacing(8)
+        lay.addWidget(self.lights)
+        lay.addSpacing(4)
+        lay.addLayout(row)
+        self.setFixedWidth(420)
+        self.t0 = time.monotonic()
+        self.clock = QTimer(self)
+        self.clock.timeout.connect(self._tick)
+        self.clock.start(250)
+
+    def _tick(self):
+        self.elapsed.setText("%d s" % int(time.monotonic() - self.t0))
+
+    def set_step(self, text):
+        self.step.setText(text + "...")
+
+    def show_centered(self):
+        self.adjustSize()
+        centre = self.parent().frameGeometry().center()
+        self.move(centre.x() - self.width() // 2, centre.y() - self.height() // 2)
+        self.show()
+        QApplication.processEvents()
+
+    def finish(self):
+        self._finished = True
+        self.lights.stop()
+        self.clock.stop()
+        self.done(0)
+
+    def reject(self):                   # Esc does nothing while the check runs
+        if self._finished:
+            super().reject()
+
+    def closeEvent(self, event):        # nor does Alt+F4
+        if self._finished:
+            event.accept()
+        else:
+            event.ignore()
+
+
+class CheckWorker(QThread):
+    """Runs the checks away from the window's thread, so the window (and the
+    loading animation) keep moving.  Excel objects can't be shared between
+    threads directly, so the workbook is handed over as a marshalled stream."""
+    progress = Signal(str)
+    done_ok = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, stream, parent=None):
+        super().__init__(parent)
+        self.stream = stream
+
+    def run(self):
+        core.pythoncom.CoInitialize()
+        try:
+            import win32com.client
+            disp = core.pythoncom.CoGetInterfaceAndReleaseStream(self.stream, core.pythoncom.IID_IDispatch)
+            wb = win32com.client.Dispatch(disp)
+            self.done_ok.emit(core.check_workbook_report(wb, self.progress.emit))
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+        finally:
+            core.pythoncom.CoUninitialize()
+
+
 class CheckerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -207,6 +350,9 @@ class CheckerWindow(QMainWindow):
         self.report = None
         self.checked_name = ""
         self.checked_at = None
+        self.worker = None           # background check in progress
+        self.loader = None
+        self.pending_name = ""
         self.settings = QSettings("PAB Checker", "PAB Checker")
         self._make_leds()
 
@@ -388,6 +534,8 @@ class CheckerWindow(QMainWindow):
 
     # ------------------------------------------------------------------ checks
     def run_checks(self):
+        if self.worker is not None:             # a check is already running
+            return
         wb = self._selected_workbook()
         if wb is None:
             return
@@ -400,19 +548,60 @@ class CheckerWindow(QMainWindow):
             if wb is None:
                 return
             name = str(wb.Name)
-        self._busy("Reading %s..." % name)
-        try:
-            rep = core.check_workbook_report(wb)
-        except Exception as exc:
-            self._idle()
-            self.wb = None
-            self._error("The checks could not finish.", exc)
+        self.pending_name = name
+        self._busy("Checking %s..." % name, cursor=False)
+        self.loader = LoaderDialog(self, name)
+        self.loader.show_centered()
+
+        stream = None
+        try:                                    # hand the workbook to the background thread
+            com = getattr(wb, "_inner", wb)     # xlwings wraps the Excel object
+            stream = core.pythoncom.CoMarshalInterThreadInterfaceInStream(
+                core.pythoncom.IID_IDispatch, com._oleobj_)
+        except Exception:
+            stream = None
+        if stream is None:                      # fall back to checking on this thread
+            try:
+                rep = core.check_workbook_report(wb, self._step_here)
+            except Exception:
+                self._check_failed(traceback.format_exc())
+                return
+            self._check_done(rep)
             return
+        self.worker = CheckWorker(stream, self)
+        self.worker.progress.connect(self.loader.set_step)
+        self.worker.done_ok.connect(self._check_done)
+        self.worker.failed.connect(self._check_failed)
+        self.worker.start()
+
+    def _step_here(self, text):
+        if self.loader:
+            self.loader.set_step(text)
+        QApplication.processEvents()
+
+    def _end_check(self):
+        if self.loader:
+            self.loader.finish()
+            self.loader = None
+        if self.worker:
+            self.worker.wait(5000)
+            self.worker = None
         self._idle()
+
+    def _check_done(self, rep):
+        self._end_check()
+        name = self.pending_name
         self.report, self.checked_name, self.checked_at = rep, name, datetime.now()
         self.btn_copy.setEnabled(True)
         self._redraw()
         self.status.setText("Checked %s at %s" % (name, self.checked_at.strftime("%H:%M")))
+
+    def _check_failed(self, tb):
+        self._end_check()
+        self.wb = None
+        print(tb)
+        last = tb.strip().splitlines()[-1] if tb.strip() else "unknown error"
+        QMessageBox.critical(self, APP_TITLE, "The checks could not finish.\n\n%s" % last)
 
     def _redraw(self, *_):
         rep = self.report
@@ -607,9 +796,10 @@ class CheckerWindow(QMainWindow):
                 return False
 
     # ----------------------------------------------------------------- helpers
-    def _busy(self, msg):
+    def _busy(self, msg, cursor=True):
         self.status.setText(msg)
-        QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        if cursor:
+            QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
         for b in (self.btn_run, self.btn_qa, self.btn_refresh, self.btn_open):
             b.setEnabled(False)
         QApplication.processEvents()

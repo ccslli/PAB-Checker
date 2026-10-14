@@ -1958,8 +1958,27 @@ def resolve_sheets(sheets):
     return chosen, info
 
 
-def read_grids(wb):
-    """wb: Excel Workbook COM object -> {key: Grid or None}.  Read only."""
+def _last_cell(ws):
+    """(last row, last column) that really hold something.  Excel's UsedRange
+    often runs far past the data (formatting, deleted rows - 60,000 rows on
+    some Notes tabs), and reading all those empty cells is what makes a check
+    slow.  Falls back to UsedRange if the search isn't possible."""
+    XL_FORMULAS, XL_PART, XL_BY_ROWS, XL_BY_COLUMNS, XL_PREVIOUS = -4123, 2, 1, 2, 2
+    try:
+        start = ws.Cells(1, 1)
+        r = ws.Cells.Find("*", start, XL_FORMULAS, XL_PART, XL_BY_ROWS, XL_PREVIOUS)
+        if r is None:
+            return 0, 0                                     # empty sheet
+        c = ws.Cells.Find("*", start, XL_FORMULAS, XL_PART, XL_BY_COLUMNS, XL_PREVIOUS)
+        return r.Row, c.Column
+    except Exception:
+        ur = ws.UsedRange
+        return ur.Row + ur.Rows.Count - 1, ur.Column + ur.Columns.Count - 1
+
+
+def read_grids(wb, progress=None):
+    """wb: Excel Workbook COM object -> {key: Grid or None}.  Read only.
+    progress(text) is called before each tab is read (used by the window)."""
     grids = {k: None for k in SHEETS}
     by_name = {ws.Name: ws for ws in wb.Worksheets}
     chosen, info = resolve_sheets([(ws.Name, ws.Visible == -1) for ws in wb.Worksheets])
@@ -1968,12 +1987,15 @@ def read_grids(wb):
         ws = by_name.get(chosen.get(key))
         if ws is None:
             continue
-        ur = ws.UsedRange
-        last_r = ur.Row + ur.Rows.Count - 1
-        last_c = ur.Column + ur.Columns.Count - 1
-        vals = ws.Range(ws.Cells(1, 1), ws.Cells(last_r, last_c)).Value
-        if not isinstance(vals, tuple):
-            vals = ((vals,),)
+        if progress:
+            progress("Reading %s" % ws.Name)
+        last_r, last_c = _last_cell(ws)
+        if last_r < 1 or last_c < 1:
+            vals = ()
+        else:
+            vals = ws.Range(ws.Cells(1, 1), ws.Cells(last_r, last_c)).Value
+            if not isinstance(vals, tuple):
+                vals = ((vals,),)
         hidden = []
         if key in MERGE_CLEAN_SHEETS:
             vals, hidden = _drop_values_hidden_by_merges(ws, vals)
@@ -2188,9 +2210,12 @@ def tab_order():
     return [v[0] for v in SHEETS.values()]
 
 
-def check_workbook_report(wb):
+def check_workbook_report(wb, progress=None):
     """Read the workbook (left open, untouched) and run every check -> Report."""
-    rep, _ = run_checks(read_grids(wb))
+    grids = read_grids(wb, progress)
+    if progress:
+        progress("Comparing the tabs")
+    rep, _ = run_checks(grids)
     return rep
 
 
