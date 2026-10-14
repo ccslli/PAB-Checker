@@ -6,7 +6,8 @@ Window version of the PAB checker (PySide6 / Qt).
 
 All the checks live in design_workbook_check.py (the terminal version); this
 file only adds the window, so any fix to a check is made once, in that file,
-and both versions get it.  Keep the two files in the same folder.
+and both versions get it.  Keep the two files in the same folder, with the
+branding folder (the Design Team icon) beside them.
 
 Usage (Windows, Excel installed):
 
@@ -34,6 +35,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, 
 import design_workbook_check as core
 
 APP_TITLE = "PAB Checker"
+# Design Team icon (built by branding/make_dt_icon.py)
+ICON_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "branding", "dt_icon.ico")
 PLACEHOLDER = "Select a workbook..."
 
 # ---- palettes: rack-panel greys, Cat6-blue accent, port-LED status colours ----
@@ -599,8 +602,18 @@ class CheckerWindow(QMainWindow):
 
 
 def main():
+    if sys.platform == "win32":
+        # Without this, Windows groups the window under python.exe in the taskbar and
+        # shows Python's icon there instead of ours.
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("DesignTeam.PABChecker")
+        except Exception:
+            pass
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    if os.path.isfile(ICON_FILE):
+        app.setWindowIcon(QIcon(ICON_FILE))
     apply_theme(app, "dark" if saved_dark_mode(QSettings("PAB Checker", "PAB Checker")) else "light")
     if core.pythoncom is None or core.xw is None:
         QMessageBox.critical(None, APP_TITLE, "pywin32 and xlwings are needed.\n\n"
