@@ -50,8 +50,8 @@ THEMES = {
                  border="#3A3D42", hover="#1F2124", select="#1F3247", pressed="#26282C",
                  disabled="#5C6067", disabled_border="#2A2C2F", statusbar="#0E0F10",
                  accent="#6EA8E6", highlight="#3474BD",
-                 button="#191A1B", button_hover="#232428", button_border="#4A4E54",
-                 button_hover_border="#6EA8E6", button_disabled="#191A1B", button_disabled_text="#5C6067",
+                 button="#20201F", button_hover="#2A2A29", button_border="#4A4E54",
+                 button_hover_border="#6EA8E6", button_disabled="#20201F", button_disabled_text="#5C6067",
                  green="#57C46F", amber="#F2A541", red="#F26B60", note_bar="#3A3D42"),
 }
 # current colours (set by apply_theme; read by the window when it draws)
