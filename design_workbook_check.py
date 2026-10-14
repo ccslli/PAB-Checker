@@ -27,6 +27,12 @@ import re
 import subprocess
 import sys
 import traceback
+
+try:                                    # Windows + Excel; also imported by pab_checker_gui.py
+    import pythoncom
+    import xlwings as xw
+except ImportError:                     # lets the checks be imported where Excel isn't available
+    pythoncom = xw = None
 from collections import Counter, OrderedDict, defaultdict
 
 # =============================================================================
@@ -457,16 +463,24 @@ class Report:
     def count(self, level):
         return sum(1 for i in self.items if i[1] == level)
 
-    def render(self, tab_order):
-        lines = ["SUMMARY: %d error(s), %d warning(s)" % (self.count("ERROR"), self.count("WARN"))]
+    def sections(self, tab_order):
+        """[(tab, [(level, message)] errors first, then warnings, then notes)]"""
         tabs = list(tab_order) + [t for t in dict.fromkeys(i[0] for i in self.items)
                                   if t not in tab_order]
+        out = []
         for tab in tabs:
             mine = [i for i in self.items if i[0] == tab]
+            out.append((tab, [(lv, msg) for level in ("ERROR", "WARN", "NOTE")
+                              for _, lv, msg in mine if lv == level]))
+        return out
+
+    def render(self, tab_order):
+        lines = ["SUMMARY: %d error(s), %d warning(s)" % (self.count("ERROR"), self.count("WARN"))]
+        tags = {"ERROR": "[ERROR] ", "WARN": "[WARN ] ", "NOTE": ""}
+        for tab, items in self.sections(tab_order):
             lines += ["", "=" * 78, tab, "=" * 78]
-            for level, tag in (("ERROR", "[ERROR] "), ("WARN", "[WARN ] "), ("NOTE", "")):
-                lines += [tag + msg for _, lv, msg in mine if lv == level]
-            if not any(lv in ("ERROR", "WARN") for _, lv, _ in mine):
+            lines += [tags[lv] + msg for lv, msg in items]
+            if not any(lv in ("ERROR", "WARN") for lv, _ in items):
                 lines.append("No issues found in %s." % tab)
         return "\n".join(lines)
 
@@ -1759,17 +1773,19 @@ def _excel_com():
         return None
 
 
-def _open_protected(pv):
+def _open_protected(pv, confirm=None):
     """Workbook behind a Protected View window: read it as-is if Excel allows,
-    otherwise offer to click 'Enable Editing' for the user."""
+    otherwise offer to click 'Enable Editing' for the user.
+    confirm(question) -> True/False; defaults to asking in the terminal."""
     try:
         wb = pv.Workbook
         wb.Worksheets.Count                     # make sure it can be read
         return wb
     except Exception:
         pass
-    if ask("%s is in Protected View. Enable editing so it can be checked? (y = yes, Enter = cancel): "
-           % pv.SourceName) == "y":
+    if confirm is None:
+        confirm = lambda q: ask(q + " (y = yes, Enter = cancel): ") == "y"
+    if confirm("%s is in Protected View. Enable editing so it can be checked?" % pv.SourceName):
         try:
             return pv.Edit()
         except Exception as exc:
@@ -1777,10 +1793,12 @@ def _open_protected(pv):
     return None
 
 
-def select_or_open_workbook():
+def list_open_workbooks():
+    """Every workbook open in every running Excel instance, including files in
+    Protected View.  -> [(label, opener)] where opener(confirm=None) returns the
+    Excel Workbook object (or None)."""
     pythoncom.CoInitialize()
 
-    # (label shown to the user, function returning the Excel workbook object)
     workbook_choices = []
     seen = set()
 
@@ -1800,7 +1818,7 @@ def select_or_open_workbook():
     for app in apps:
         try:
             for wb in app.books:
-                add(wb.name, wb.fullname, lambda wb=wb: wb.api)
+                add(wb.name, wb.fullname, lambda confirm=None, wb=wb: wb.api)
         except Exception:
             any_failed = True
 
@@ -1810,7 +1828,7 @@ def select_or_open_workbook():
             try:
                 for i in range(1, xl.Workbooks.Count + 1):
                     wb = xl.Workbooks(i)
-                    add(wb.Name, wb.FullName, lambda wb=wb: wb)
+                    add(wb.Name, wb.FullName, lambda confirm=None, wb=wb: wb)
             except Exception:
                 pass
         # files open in Protected View ('Enable Editing' bar)
@@ -1818,9 +1836,31 @@ def select_or_open_workbook():
             for i in range(1, xl.ProtectedViewWindows.Count + 1):
                 pv = xl.ProtectedViewWindows(i)
                 add("%s  (Protected View)" % pv.SourceName, "pv:" + pv.SourcePath + pv.SourceName,
-                    lambda pv=pv: _open_protected(pv))
+                    lambda confirm=None, pv=pv: _open_protected(pv, confirm))
         except Exception:
             pass
+    return workbook_choices
+
+
+def open_workbook_path(path):
+    """Open a workbook file in Excel (or return it if it is already open)."""
+    pythoncom.CoInitialize()
+    target = os.path.normcase(os.path.abspath(path))
+    xl = _excel_com()
+    if xl is not None:
+        try:
+            for i in range(1, xl.Workbooks.Count + 1):
+                wb = xl.Workbooks(i)
+                if os.path.normcase(str(wb.FullName)) == target:
+                    return wb
+            return xl.Workbooks.Open(path)
+        except Exception:
+            pass
+    return xw.App(visible=True, add_book=False).books.open(path).api
+
+
+def select_or_open_workbook():
+    workbook_choices = list_open_workbooks()
 
     # If there are open workbooks, let user choose one
     if workbook_choices:
@@ -1836,6 +1876,7 @@ def select_or_open_workbook():
             pass
 
     # Fallback: use active Excel instance if one exists, otherwise create one
+    xl = _excel_com()
     app = None
     try:
         if xw.apps.count > 0:
@@ -2059,14 +2100,20 @@ def find_qa_script():
             return None
 
 
+def qa_xlsx_files(folder):
+    """The .xlsx files in the DOE QA folder (Excel's ~$ lock files ignored).
+    Raises OSError if the folder can't be read."""
+    return sorted(f for f in os.listdir(folder)
+                  if f.lower().endswith(".xlsx") and not f.startswith("~$")
+                  and os.path.isfile(os.path.join(folder, f)))
+
+
 def qa_folder_ready(folder):
     """The DOE QA script expects exactly one .xlsx in its folder.  Keep checking
     until that is true, or the user chooses to exit.  -> True to go ahead."""
     while True:
         try:
-            files = sorted(f for f in os.listdir(folder)
-                           if f.lower().endswith(".xlsx") and not f.startswith("~$")   # ~$ = Excel lock file
-                           and os.path.isfile(os.path.join(folder, f)))
+            files = qa_xlsx_files(folder)
         except OSError as exc:
             print("Could not read the folder %s: %s" % (folder, exc))
             files = None
@@ -2096,12 +2143,21 @@ def run_qa_script():
     subprocess.call([sys.executable, script], cwd=os.path.dirname(script))
 
 
+def tab_order():
+    return [v[0] for v in SHEETS.values()]
+
+
+def check_workbook_report(wb):
+    """Read the workbook (left open, untouched) and run every check -> Report."""
+    rep, _ = run_checks(read_grids(wb))
+    return rep
+
+
 def check_workbook(wb):
     print("\nReading %s ...\n" % wb.Name)
-    grids = read_grids(wb)                 # the workbook is left open, untouched
-    rep, _ = run_checks(grids)
+    rep = check_workbook_report(wb)
     print("Workbook: %s" % wb.Name)
-    print(rep.render([v[0] for v in SHEETS.values()]))
+    print(rep.render(tab_order()))
 
 
 def main():
