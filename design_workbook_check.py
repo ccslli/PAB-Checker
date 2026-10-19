@@ -93,10 +93,12 @@ DROP_IPDVS_LABEL = "IOT_IPDVS"
 # cameras, so they are not expected on the Camera Information tab.
 DROP_IPDVS_NOT_CAMERA = ["Server", "UPS", "MVS", "Safer Access"]
 DROP_HEADER_ROW = 3              # column titles, used in messages
-# A Drop_List port is recognised as a POS port when column P (Notes) contains
-# one of these words.  Ports that Notes or the POS tab already call out are
-# matched on switch + port (and VLAN) instead, whatever the label says.
-DROP_POS_LABELS = ["POS", "Dietician", "Dietitian", "Diet", "Kiosk"]
+# A Drop_List port is a POS port when its whole column P (Notes) text is one of
+# these, optionally followed by more words ("POS", "Dietician Office").  A word
+# inside an AP name (85Q008_B_DIET) doesn't count, and TRUNK ports never do.
+# Ports that Notes or the POS tab already call out are matched on switch + port
+# (and VLAN) instead, whatever the label says.
+DROP_POS_LABELS = ["POS", "Dietician", "Dietitian", "Kiosk"]
 # Uplink ports on the X1 core that feed access switches (one per switch).
 X1_UPLINK_PORTS = (1, 36)
 
@@ -953,12 +955,13 @@ def parse_drop(g, rep):
                 rep.error(T, "%s port %d is listed %d times (rows %s)."
                           % (h, port, len(simple), ", ".join(str(x["row"]) for x in simple)))
     # POS ports (by the label in column P) and the X1 core's access uplinks
-    pos_re = re.compile(r"(?<![A-Za-z])(%s)(?![A-Za-z])" % "|".join(re.escape(l) for l in DROP_POS_LABELS), re.I)
+    pos_re = re.compile(r"\s*(%s)('s)?(\s+[A-Za-z']+)*\s*" % "|".join(re.escape(l) for l in DROP_POS_LABELS), re.I)
     pos = {}
     for h, d in devices.items():
         for port, rows in d["ports"].items():
             for x in rows:
-                if x["simple"] and pos_re.search(x["p"]) and d["x"] is not None:
+                if (x["simple"] and d["x"] is not None and pos_re.fullmatch(x["p"])
+                        and x["vlan"] != "TRUNK"):
                     pos[(d["x"], port)] = x
     uplinks = None
     core = [d for d in devices.values() if d["x"] == 1]
