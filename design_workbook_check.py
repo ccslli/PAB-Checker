@@ -2009,6 +2009,16 @@ def _last_cell(ws):
             last_c = max(last_c, c.Column)
     if not found and ur_r is not None:
         return ur_r, ur_c
+    if ur_r is not None:
+        try:
+            protected = bool(ws.ProtectContents)
+        except Exception:
+            protected = False
+        if protected:
+            # protected template tabs (Video Servers & Consoles) often mark every
+            # cell 'Hidden', which can hide them from the search above - read
+            # the whole used area instead (these tabs are small)
+            last_r = max(last_r, min(ur_r, 5000))
     if ur_c is not None:
         # columns are cheap compared with rows - never read fewer than UsedRange
         # has (up to a sane limit), so a value the search missed still gets read
