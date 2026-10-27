@@ -172,6 +172,9 @@ VIDEO_COMBINED_CELLS = [
     ("MVS 2", "E29", r"\bmvs\s*2\b"),
     ("MVS 3", "E30", r"\bmvs\s*3\b"),
 ]
+# Notes IPDVS components that belong on the Video tab.  Anything else (VPU1,
+# encoders, ...) is listed on the camera tab, so it isn't expected here.
+VIDEO_TAB_COMPONENTS = r"server|srv|\bnic|\bimm|\bups|\bmvs|viewing|workstation|console"
 # Tabs searched for a "Switch Name" / "Switch Port" header; every port listed
 # under it must be IOT_IPDVS in Drop_List column K.
 SWITCH_TABLE_SHEETS = ["video", "camera"]
@@ -1620,51 +1623,65 @@ def check_ipdvs_coverage(tab, notes, drop, covered, rep):
                           % (h, port, DROP_IPDVS_LABEL, x["row"], x["p"] or "no description", tab))
 
 
+def _find_labelled_cells(g, pattern, max_row=80):
+    """Every (row, col) whose normalised text fully matches `pattern`, top to bottom."""
+    rx = re.compile(pattern)
+    return [(r, c) for r in range(1, min(g.nrows, max_row) + 1)
+            for c, t in g.row_cells(r) if rx.fullmatch(norm(t))]
+
+
 def _find_labelled_cell(g, pattern, max_row=80):
     """First (row, col) whose normalised text fully matches `pattern`."""
-    rx = re.compile(pattern)
-    for r in range(1, min(g.nrows, max_row) + 1):
-        for c, t in g.row_cells(r):
-            if rx.fullmatch(norm(t)):
-                return r, c
-    return None
+    found = _find_labelled_cells(g, pattern, max_row)
+    return found[0] if found else None
 
 
 def _video_items(g):
     """Server / UPS / MVS switch+port values.  The cells are found by their
     labels ('NIC-1 Switch', 'IMM Port', 'UPS Switch', and 'Viewing Station n' /
     'MVS n' under a 'Switch / Port' header), so the tab layout can move around.
-    Falls back to the fixed cells in the configuration when a label isn't found.
+    When a label appears more than once (older templates, lookup lists off to
+    the side) the copy that has a value next to it wins, and the fixed cells in
+    the configuration are used when the labels give nothing.
     -> [(label, where, x, port, raw text, Notes regex)]"""
+    def blank(v):
+        return clean(v) == ""
+
     items = []
     labels = {"Server 1 NIC": ("nic", 1), "Server 2 NIC": ("nic", 2),
               "Server 1 IMM": ("imm", 1), "Server 2 IMM": ("imm", 2), "UPS 1": ("ups", 1)}
     for label, xc, pcell, pat in VIDEO_SPLIT_CELLS:
-        sw = pt = None
+        choices = []                                   # (switch, port, where)
         if label in labels:
             word, n = labels[label]
-            a = _find_labelled_cell(g, r"%s\d*switch" % word)
-            b = _find_labelled_cell(g, r"%s\d*port" % word)
-            if a and b:
-                sw, pt = g.get(a[0], a[1] + n), g.get(b[0], b[1] + n)
-                where = "%s/%s" % (a1(a[0], a[1] + n), a1(b[0], b[1] + n))
-        if sw is None and pt is None and not (label in labels and a and b):
-            sw, pt, where = g.at(xc), g.at(pcell), "%s/%s" % (xc, pcell)
+            for a in _find_labelled_cells(g, r"%s\d*switch" % word):
+                for b in _find_labelled_cells(g, r"%s\d*port" % word):
+                    if b[1] == a[1] and 0 < b[0] - a[0] <= 3:     # 'Port' just below 'Switch'
+                        choices.append((g.get(a[0], a[1] + n), g.get(b[0], b[1] + n),
+                                        "%s/%s" % (a1(a[0], a[1] + n), a1(b[0], b[1] + n))))
+        choices.append((g.at(xc), g.at(pcell), "%s/%s" % (xc, pcell)))
+        sw, pt, where = next((ch for ch in choices if not (blank(ch[0]) and blank(ch[1]))),
+                             choices[0])
         items.append((label, where, parse_x(sw), parse_port(pt),
                       "%s / %s" % (clean(sw) or "blank", clean(pt) or "blank"), pat))
 
     # MVS / viewing stations listed under a 'Switch / Port' column
-    mvs = {}
-    hdr = _find_labelled_cell(g, r"switch(and)?port")
-    if hdr:
+    tables = []
+    for hdr in _find_labelled_cells(g, r"switch(and)?port"):
+        mvs = {}
         for r in range(hdr[0] + 1, min(g.nrows, hdr[0] + 15) + 1):
             names = " ".join(t for c, t in g.row_cells(r) if c < hdr[1])
             m = re.search(r"(?:mvs|viewing\s*station)\s*(\d+)", names, re.I)
             if m:
-                mvs[int(m.group(1))] = (g.get(r, hdr[1]), a1(r, hdr[1]))
+                mvs.setdefault(int(m.group(1)), (g.get(r, hdr[1]), a1(r, hdr[1])))
+        if mvs:
+            tables.append(mvs)
+    # prefer the table that actually has something filled in
+    mvs = next((t for t in tables if any(not blank(v) for v, _ in t.values())),
+               tables[0] if tables else {})
     for label, cc, pat in VIDEO_COMBINED_CELLS:
         n = int(re.search(r"\d+", label).group(0))
-        val, where = mvs.get(n, (g.at(cc), cc)) if mvs else (g.at(cc), cc)
+        val, where = mvs.get(n, (g.at(cc), cc))
         sp = parse_switch_port(val)
         items.append((label, where, sp["x"], sp["port"], sp["raw"] or "blank", pat))
     return items
@@ -1699,7 +1716,9 @@ def check_video(g, notes, drop, rep, covered):
         if VIDEO_FIXED_CELLS_MUST_BE_IPDVS:
             _check_ipdvs_port(T, label, None, x, port, drop, rep)
     for e in ipdvs:
-        if id(e) not in matched:
+        # VPUs, encoders etc. are listed on the camera tab, not here - only
+        # warn about the server / UPS / viewing-station parts this tab holds
+        if id(e) not in matched and re.search(VIDEO_TAB_COMPONENTS, e["component"], re.I):
             rep.warn(T, "Notes IPDVS component '%s' (X%s port %s) was not matched to any cell on this tab."
                      % (e["component"], e["x"], e["port"]))
 
@@ -1966,17 +1985,37 @@ def _last_cell(ws):
     often runs far past the data (formatting, deleted rows - 60,000 rows on
     some Notes tabs), and reading all those empty cells is what makes a check
     slow.  Falls back to UsedRange if the search isn't possible."""
-    XL_FORMULAS, XL_PART, XL_BY_ROWS, XL_BY_COLUMNS, XL_PREVIOUS = -4123, 2, 1, 2, 2
+    XL_FORMULAS, XL_VALUES, XL_PART, XL_BY_ROWS, XL_BY_COLUMNS, XL_PREVIOUS = -4123, -4163, 2, 1, 2, 2
     try:
-        start = ws.Cells(1, 1)
-        r = ws.Cells.Find("*", start, XL_FORMULAS, XL_PART, XL_BY_ROWS, XL_PREVIOUS)
-        if r is None:
-            return 0, 0                                     # empty sheet
-        c = ws.Cells.Find("*", start, XL_FORMULAS, XL_PART, XL_BY_COLUMNS, XL_PREVIOUS)
-        return r.Row, c.Column
-    except Exception:
         ur = ws.UsedRange
-        return ur.Row + ur.Rows.Count - 1, ur.Column + ur.Columns.Count - 1
+        ur_r, ur_c = ur.Row + ur.Rows.Count - 1, ur.Column + ur.Columns.Count - 1
+    except Exception:
+        ur_r = ur_c = None
+    last_r = last_c = 0
+    found = False
+    start = ws.Cells(1, 1)
+    # Search both formulas and values: on a protected tab, cells with the
+    # 'Hidden' protection flag are invisible to a formulas search.
+    for look_in in (XL_FORMULAS, XL_VALUES):
+        try:
+            r = ws.Cells.Find("*", start, look_in, XL_PART, XL_BY_ROWS, XL_PREVIOUS)
+            c = ws.Cells.Find("*", start, look_in, XL_PART, XL_BY_COLUMNS, XL_PREVIOUS)
+        except Exception:
+            continue
+        found = True
+        if r is not None:
+            last_r = max(last_r, r.Row)
+        if c is not None:
+            last_c = max(last_c, c.Column)
+    if not found and ur_r is not None:
+        return ur_r, ur_c
+    if ur_c is not None:
+        # columns are cheap compared with rows - never read fewer than UsedRange
+        # has (up to a sane limit), so a value the search missed still gets read
+        last_c = max(last_c, min(ur_c, 100))
+        if last_r == 0 and ur_r:
+            last_r = min(ur_r, 2000)
+    return last_r, last_c
 
 
 def read_grids(wb, progress=None):
