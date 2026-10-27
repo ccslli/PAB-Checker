@@ -1572,8 +1572,12 @@ def _switch_table_headers(g):
 
 
 def _ip_column(g, r0, nc):
-    """Column holding the IP for a 'Switch Name' column: the nearest header to
-    its left with 'IP' in it, otherwise the column just left of it."""
+    """Column holding the shared VPU IP for a 'Switch Name' column: the
+    'VPU IP Address' header, otherwise the nearest header to its left with
+    'IP' in it (e.g. 'Camera IP Address'), otherwise the column just left."""
+    vpu = [c for c, t in g.row_cells(r0) if re.search(r"\bvpu\b", t, re.I) and re.search(r"\bip\b", t, re.I)]
+    if vpu:
+        return min(vpu, key=lambda c: (c > nc, abs(nc - c)))
     for c in range(nc - 1, 0, -1):
         if re.search(r"\bip\b", g.text(r0, c), re.I):
             return c
