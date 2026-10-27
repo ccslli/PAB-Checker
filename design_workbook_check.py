@@ -1571,6 +1571,15 @@ def _switch_table_headers(g):
     return None
 
 
+def _ip_column(g, r0, nc):
+    """Column holding the IP for a 'Switch Name' column: the nearest header to
+    its left with 'IP' in it, otherwise the column just left of it."""
+    for c in range(nc - 1, 0, -1):
+        if re.search(r"\bip\b", g.text(r0, c), re.I):
+            return c
+    return nc - 1 if nc > 1 else None
+
+
 def check_switch_table(g, tab, drop, rep, covered):
     """Verify each port under 'Switch Name' / 'Switch Port' is IOT_IPDVS in Drop_List."""
     hdr = _switch_table_headers(g)
@@ -1578,8 +1587,9 @@ def check_switch_table(g, tab, drop, rep, covered):
         return None
     r0, pairs = hdr
     n = 0
-    seen = {}
+    seen = {}            # (x, port) -> (first row, IP on that row)
     for nc, pc in pairs:
+        ipc = _ip_column(g, r0, nc)
         for r in range(r0 + 1, g.nrows + 1):
             name, port_raw = g.text(r, nc), g.text(r, pc)
             if not name and not port_raw:
@@ -1596,9 +1606,21 @@ def check_switch_table(g, tab, drop, rep, covered):
             if x is None or port is None:
                 rep.error(tab, "%s: switch or port is missing / unreadable." % ref)
                 continue
+            ip = g.text(r, ipc) if ipc else ""
             if (x, port) in seen:
-                rep.error(tab, "%s: X%d port %d is already used on row %d." % (ref, x, port, seen[(x, port)]))
-            seen[(x, port)] = r
+                first, first_ip = seen[(x, port)]
+                if ip and ip == first_ip:
+                    # analog cameras behind a VPU all share its uplink port
+                    # and its IP - not a duplicate (Drop_List already checked)
+                    continue
+                if ip and first_ip:
+                    rep.error(tab, "%s: X%d port %d is already used on row %d with a different IP "
+                                   "(%s here, %s on row %d)."
+                              % (ref, x, port, first, ip, first_ip, first))
+                else:
+                    rep.error(tab, "%s: X%d port %d is already used on row %d." % (ref, x, port, first))
+                continue
+            seen[(x, port)] = (r, ip)
             covered.add((x, port))
             _check_ipdvs_port(tab, ref, host, x, port, drop, rep)
     if not n:
