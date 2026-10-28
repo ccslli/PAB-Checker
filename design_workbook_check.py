@@ -85,6 +85,7 @@ MERGE_CLEAN_SHEETS = ["diagram"]
 
 # ---- Drop_List --------------------------------------------------------------
 DROP_PORT_COL = "E"
+DROP_NUMBER_COL = "F"            # a port counts as used when this holds a drop (not blank / 0)
 DROP_VLAN_COL = "I"
 DROP_TYPE_COL = "K"              # where IOT_IPDVS is expected
 DROP_WIRELESS_COL = "P"          # compared with Wireless_Design_Data column D
@@ -922,6 +923,7 @@ def check_diagram_vs_notes(notes, diagram, rep):
 def parse_drop(g, rep):
     T = "Drop_List"
     pc, vc, kc, wc = col(DROP_PORT_COL), col(DROP_VLAN_COL), col(DROP_TYPE_COL), col(DROP_WIRELESS_COL)
+    dc = col(DROP_NUMBER_COL)
     devices = OrderedDict()
     cur = None
     for r in range(1, g.nrows + 1):
@@ -935,10 +937,16 @@ def parse_drop(g, rep):
                 rep.error(T, "%s has more than one header row (rows %d and %d)."
                           % (host, devices[host]["row"], r))
             cur = devices.setdefault(host, {"host": host, "row": r, "ports": defaultdict(list),
-                                            "x": host_x(host), "model": host_model(host)})
+                                            "x": host_x(host), "model": host_model(host),
+                                            "used_ports": 0, "used_sfps": 0})
             continue
         if cur is None:
             continue
+        # used = something in Drop Number (unused ports show 0 from a formula);
+        # plain numbered ports are copper, anything else (Te1/1/1, 1_C9300X-NM-8Y_1,
+        # Twe1/0/1) is a modular / SFP port
+        if g.text(r, pc) and g.text(r, dc) and num(g.get(r, dc)) != 0:
+            cur["used_ports" if port_is_simple(g.get(r, pc)) else "used_sfps"] += 1
         port = parse_port(g.get(r, pc))
         if port is None:
             continue
@@ -1014,6 +1022,20 @@ def check_drop(notes, diagram, drop, rep):
             hint = close_match(h, wanted)
             rep.error(T, "%s (row %d) is not in Notes or Network_Diagram%s."
                       % (h, d["row"], " - possible typo of %s" % hint if hint else ""))
+
+    # Network_Diagram 'Ports Used' / 'SFPs Used' vs ports with a drop number
+    for h, lst in diagram["hosts"].items():
+        d = devs.get(h)
+        if d is None:
+            continue
+        for b in lst:
+            if not b.get("has_block") or not b.get("has_ports_label"):
+                continue        # core switches (QSFP blocks) aren't compared
+            for key, label, word in (("ports", "Ports Used", "port"), ("sfps", "SFPs Used", "SFP/modular port")):
+                shown, have = b[key], d["used_%s" % key]
+                if isinstance(shown, (int, float)) and int(shown) != have:
+                    rep.error("Network_Diagram", "%s: '%s' is %d but Drop_List has %d %s%s with a drop number."
+                              % (h, label, int(shown), have, word, "" if have == 1 else "s"))
 
     # X1 uplinks: one per access switch, each naming a real switch
     if drop.get("uplinks") is not None and notes["new_hosts"]:
