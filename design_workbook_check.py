@@ -183,6 +183,13 @@ SWITCH_TABLE_HEADER_ROWS = 40    # how far down to look for the header
 # Also require the fixed Video cells above to be IOT_IPDVS in Drop_List?
 VIDEO_FIXED_CELLS_MUST_BE_IPDVS = True
 
+# ---- Wireless_Design_Data column A fix (runs before the checks) -------------
+# Column A from row 5 down is converted to real numbers (text '3' -> 3) and
+# formatted "0".  Turned on/off with the box in the window (saved setting).
+WDATA_FIX_COL = "A"
+WDATA_FIX_FIRST_ROW = 5
+WDATA_FIX_TITLE = "Wireless_Design_Data column %s fix" % WDATA_FIX_COL
+
 # ---- DOE QA script (offered after the checks) -------------------------------
 QA_SCRIPT_NAME = "QA_Automation_03_17v3.py"
 # Where the chosen QA folder is remembered between runs
@@ -455,6 +462,7 @@ class Report:
 
     def __init__(self):
         self.items = []          # (tab, level, message)
+        self.footer = []         # (title, [lines]) printed after every tab
 
     @staticmethod
     def _tidy(msg):
@@ -492,6 +500,8 @@ class Report:
             lines += [tags[lv] + msg for lv, msg in items]
             if not any(lv in ("ERROR", "WARN") for lv, _ in items):
                 lines.append("No issues found in %s." % tab)
+        for title, body in self.footer:
+            lines += ["", "=" * 78, title, "=" * 78] + list(body)
         return "\n".join(lines)
 
 
@@ -2129,22 +2139,45 @@ def _drop_values_hidden_by_merges(ws, vals):
 
 # ---- DOE QA script hand-off --------------------------------------------------
 
-def load_qa_settings():
-    """-> (folder, script file name); the name falls back to QA_SCRIPT_NAME."""
+def load_settings():
+    """Everything saved between runs (QA script location, wireless fix on/off)."""
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        return data.get("qa_folder") or "", data.get("qa_script") or QA_SCRIPT_NAME
-    except (OSError, ValueError, AttributeError):
-        return "", QA_SCRIPT_NAME
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(**changes):
+    data = load_settings()
+    data.update(changes)
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+        return True
+    except OSError:
+        return False
+
+
+def load_qa_settings():
+    """-> (folder, script file name); the name falls back to QA_SCRIPT_NAME."""
+    data = load_settings()
+    return data.get("qa_folder") or "", data.get("qa_script") or QA_SCRIPT_NAME
 
 
 def save_qa_settings(folder, script_name):
-    try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:
-            json.dump({"qa_folder": folder, "qa_script": script_name}, fh, indent=2)
-    except OSError as exc:
-        print("Could not save the script location (%s); you will be asked again next time." % exc)
+    if not save_settings(qa_folder=folder, qa_script=script_name):
+        print("Could not save the script location; you will be asked again next time.")
+
+
+def wireless_fix_enabled():
+    """On unless it has been switched off in the window."""
+    return bool(load_settings().get("fix_wireless_ids", True))
+
+
+def set_wireless_fix_enabled(on):
+    save_settings(fix_wireless_ids=bool(on))
 
 
 def _dialog(kind, **options):
@@ -2310,12 +2343,110 @@ def tab_order():
     return [v[0] for v in SHEETS.values()]
 
 
-def check_workbook_report(wb, progress=None):
-    """Read the workbook (left open, untouched) and run every check -> Report."""
+def _is_number_text(v):
+    if not isinstance(v, str) or not v.strip():
+        return None
+    try:
+        f = float(v.strip())
+    except ValueError:
+        return None
+    return f if math.isfinite(f) else None
+
+
+def fix_wireless_ids(wb):
+    """Convert Wireless_Design_Data column A (row 5 down) to real numbers and
+    format it "0".  Only cells holding a number stored as text are rewritten;
+    formulas, error values, blanks and real text are left alone.
+    -> [lines describing what happened]"""
+    names = [(ws.Name, ws.Visible == -1) for ws in wb.Worksheets]
+    chosen, _ = resolve_sheets(names)
+    name = chosen.get("wdata")
+    if not name:
+        return ["Skipped - no Wireless_Design_Data tab in this workbook."]
+    ws = wb.Worksheets(name)
+    c, r0 = WDATA_FIX_COL, WDATA_FIX_FIRST_ROW
+    XL_UP, XL_CALC_MANUAL = -4162, -4135
+    last = ws.Cells(ws.Rows.Count, c).End(XL_UP).Row
+    if last < r0:
+        return ["Skipped - no data in %s!%s%d and below." % (name, c, r0)]
+    rng = ws.Range("%s%d:%s%d" % (c, r0, c, last))
+    values, formulas = rng.Value, rng.Formula
+    if not isinstance(values, tuple):
+        values, formulas = ((values,),), ((formulas,),)
+
+    updated = skipped = 0
+    changes = []                                   # (row, number)
+    for i, (v, f) in enumerate(zip(values, formulas)):
+        v, f = v[0], f[0]
+        if isinstance(f, str) and f.startswith("="):
+            # a formula: counted like the cell it shows, but never overwritten
+            ok = isinstance(v, (int, float)) and not isinstance(v, bool) and excel_error(v) is None
+            updated, skipped = updated + ok, skipped + (not ok)
+            continue
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and excel_error(v) is None:
+            updated += 1                           # already a number
+            continue
+        n = _is_number_text(v)
+        if n is None:
+            skipped += 1                           # blank, text, error value, date
+            continue
+        changes.append((r0 + i, n))
+        updated += 1
+
+    xl = wb.Application
+    saved = (xl.ScreenUpdating, xl.EnableEvents, xl.Calculation)
+    try:
+        xl.ScreenUpdating = False
+        xl.EnableEvents = False
+        xl.Calculation = XL_CALC_MANUAL
+        # write each run of neighbouring rows in one go
+        k = 0
+        while k < len(changes):
+            j = k
+            while j + 1 < len(changes) and changes[j + 1][0] == changes[j][0] + 1:
+                j += 1
+            run = changes[k:j + 1]
+            target = ws.Range("%s%d:%s%d" % (c, run[0][0], c, run[-1][0]))
+            target.Value = tuple((n,) for _, n in run) if len(run) > 1 else run[0][1]
+            k = j + 1
+        rng.NumberFormat = "0"
+    except Exception as exc:
+        msg = getattr(exc, "excepinfo", None)
+        msg = (msg[2] if msg and len(msg) > 2 and msg[2] else str(exc)).strip()
+        return ["Could not update %s column %s: %s" % (name, c, msg),
+                "If the tab is protected, unprotect it (Review > Unprotect Sheet) and run again."]
+    finally:
+        try:
+            xl.ScreenUpdating, xl.EnableEvents, xl.Calculation = saved
+        except Exception:
+            pass
+    lines = ["Cells updated: %d" % updated, "Cells skipped: %d" % skipped]
+    if changes:
+        lines.append("%d of them were numbers stored as text and have been converted. "
+                     "Save the workbook to keep the change." % len(changes))
+    return lines
+
+
+def check_workbook_report(wb, progress=None, fix_wireless=None):
+    """Optionally fix Wireless_Design_Data column A, then read the workbook and
+    run every check -> Report (the fix's result is printed at the bottom).
+    fix_wireless=None uses the saved setting."""
+    if fix_wireless is None:
+        fix_wireless = wireless_fix_enabled()
+    fix_lines = None
+    if fix_wireless:
+        if progress:
+            progress("Fixing Wireless_Design_Data column %s" % WDATA_FIX_COL)
+        try:
+            fix_lines = fix_wireless_ids(wb)
+        except Exception as exc:
+            fix_lines = ["Could not run: %s" % exc]
     grids = read_grids(wb, progress)
     if progress:
         progress("Comparing the tabs")
     rep, _ = run_checks(grids)
+    if fix_lines is not None:
+        rep.footer.append((WDATA_FIX_TITLE, fix_lines))
     return rep
 
 

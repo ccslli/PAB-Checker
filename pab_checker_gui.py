@@ -333,9 +333,10 @@ class CheckWorker(QThread):
     done_ok = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, stream, parent=None):
+    def __init__(self, stream, fix_wireless, parent=None):
         super().__init__(parent)
         self.stream = stream
+        self.fix_wireless = fix_wireless
 
     def run(self):
         core.pythoncom.CoInitialize()
@@ -343,7 +344,7 @@ class CheckWorker(QThread):
             import win32com.client
             disp = core.pythoncom.CoGetInterfaceAndReleaseStream(self.stream, core.pythoncom.IID_IDispatch)
             wb = win32com.client.Dispatch(disp)
-            self.done_ok.emit(core.check_workbook_report(wb, self.progress.emit))
+            self.done_ok.emit(core.check_workbook_report(wb, self.progress.emit, self.fix_wireless))
         except Exception:
             self.failed.emit(traceback.format_exc())
         finally:
@@ -412,11 +413,20 @@ class CheckerWindow(QMainWindow):
         self.btn_copy.clicked.connect(self.copy_results)
         self.only_issues = QCheckBox("Only show tabs with issues")
         self.only_issues.toggled.connect(self._redraw)
+        self.fix_wireless = QCheckBox("Fix Wireless_Design_Data column %s" % core.WDATA_FIX_COL)
+        self.fix_wireless.setToolTip("Before each check, convert Wireless_Design_Data column %s "
+                                     "(row %d down) to numbers and format it \"0\". "
+                                     "The result is shown at the bottom of the results."
+                                     % (core.WDATA_FIX_COL, core.WDATA_FIX_FIRST_ROW))
+        self.fix_wireless.setChecked(core.wireless_fix_enabled())
+        self.fix_wireless.toggled.connect(core.set_wireless_fix_enabled)
         self.dark = QCheckBox("Dark mode")
         self.dark.setChecked(INK == THEMES["dark"]["ink"])
         self.dark.toggled.connect(self.set_dark_mode)
         row2.addWidget(self.btn_run)
         row2.addWidget(self.btn_qa)
+        row2.addSpacing(12)
+        row2.addWidget(self.fix_wireless)
         row2.addStretch(1)
         row2.addWidget(self.only_issues)
         row2.addSpacing(12)
@@ -571,13 +581,13 @@ class CheckerWindow(QMainWindow):
             stream = None
         if stream is None:                      # fall back to checking on this thread
             try:
-                rep = core.check_workbook_report(wb, self._step_here)
+                rep = core.check_workbook_report(wb, self._step_here, self.fix_wireless.isChecked())
             except Exception:
                 self._check_failed(traceback.format_exc())
                 return
             self._check_done(rep)
             return
-        self.worker = CheckWorker(stream, self)
+        self.worker = CheckWorker(stream, self.fix_wireless.isChecked(), self)
         self.worker.progress.connect(self.loader.set_step)
         self.worker.done_ok.connect(self._check_done)
         self.worker.failed.connect(self._check_failed)
@@ -663,6 +673,18 @@ class CheckerWindow(QMainWindow):
                 parts.append(self._row("OK", "No issues found in %s." % tab))
         if first:
             parts.append('<p style="color:%s">Every tab passed.</p>' % GREEN)
+        for j, (title, body) in enumerate(getattr(rep, "footer", [])):
+            failed = any(line.startswith("Could not") for line in body)
+            item = QTreeWidgetItem([title, "Failed" if failed else "Done"])
+            item.setIcon(0, self.leds["warn" if failed else "ok"])
+            item.setForeground(1, QBrush(QColor(AMBER if failed else MUTED)))
+            item.setData(0, Qt.ItemDataRole.UserRole, "foot%d" % j)
+            self.tree.addTopLevelItem(item)
+            parts.append('<a name="foot%d"></a><p style="font-family:%s; font-size:14pt; color:%s; '
+                         'margin-top:24px; margin-bottom:6px">%s</p>'
+                         % (j, LABEL_FONT, INK, html.escape(title)))
+            for line in body:
+                parts.append(self._row("WARN" if line.startswith("Could not") else "NOTE", line))
         parts.append("</div>")
         self.tree.blockSignals(False)
         self.view.setHtml("".join(parts))
