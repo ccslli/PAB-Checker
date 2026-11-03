@@ -100,8 +100,9 @@ DROP_HEADER_ROW = 3              # column titles, used in messages
 # Ports that Notes or the POS tab already call out are matched on switch + port
 # (and VLAN) instead, whatever the label says.
 DROP_POS_LABELS = ["POS", "Dietician", "Dietitian", "Kiosk"]
-# Uplink ports on the X1 core that feed access switches (one per switch).
-X1_UPLINK_PORTS = (1, 36)
+# Uplinks on the X1 core(s): every X1 port whose column P names an access
+# switch (any hostname that isn't X0 / X1) counts as one access switch.  With
+# two cores (X1-A / X1-B) the access switches must be split evenly between them.
 
 # ---- Wired_Equipment_List ---------------------------------------------------
 WIRED_FIRST_ROW = 4
@@ -113,7 +114,8 @@ WIRED_CLOSET_COL = "G"           # "MDF / IDF" - only used to describe rows in m
 ACCESS_MODEL = "C9300X"          # model token inside hostnames
 # Switches with these X numbers are core; every other new switch is access-layer.
 CORE_X_NUMBERS = (0, 1)
-X1_PLUS_THRESHOLD = 36           # X1+ line required above this many access switches
+# The X1+ line is required when the design has a second X1 core (X1-A + X1-B
+# in Notes / Drop_List) - no fixed switch limit, since that can change.
 # Equipment counts use the model in the hostname only.  The Notes status
 # column ("Installed New", "Reconfigured and Reused", "Installed EOL", or the
 # writer's own remarks) is ignored.
@@ -199,9 +201,11 @@ SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".pab_checker_settings.jso
 # GENERIC HELPERS
 # =============================================================================
 
+# The X# token of a hostname: X5, X1, and for a pair of cores X1-A / X1-B
+X_TOKEN = r"X\d+[A-Za-z]?(?:-[A-Za-z](?![A-Za-z0-9]))?"
 HOST_RE = re.compile(
     r"(?<![A-Za-z0-9_\-])"
-    r"([A-Za-z0-9\-]+(?:_[A-Za-z0-9\-]+)*?_X\d+[A-Za-z]?(?![A-Za-z0-9])"
+    r"([A-Za-z0-9\-]+(?:_[A-Za-z0-9\-]+)*?_" + X_TOKEN + r"(?![A-Za-z0-9])"
     r"(?:_[A-Za-z0-9\-]+)*)"
 )
 
@@ -331,11 +335,17 @@ def host_x(host):
     return int(m.group(1)) if m else None
 
 
+def host_xid(host):
+    """X# plus any -A / -B core suffix: '..._X1-A_RM-338' -> '1-A', '..._X5_..' -> '5'."""
+    m = re.search(r"_X(\d+[A-Za-z]?(?:-[A-Za-z])?)(?![A-Za-z0-9])", host, re.I)
+    return m.group(1).upper() if m else None
+
+
 def host_model(host):
     """Token immediately before the X# token, e.g. C9300X."""
     toks = host.split("_")
     for i, t in enumerate(toks):
-        if re.fullmatch(r"X\d+[A-Za-z]?", t, re.I):
+        if re.fullmatch(X_TOKEN, t, re.I):
             return toks[i - 1].upper() if i >= 2 else ""
     return ""
 
@@ -344,7 +354,7 @@ def host_room(host):
     """'..._RM-232' -> '232' ('' when the hostname has no room token)."""
     toks = host.split("_")
     for i, t in enumerate(toks):
-        if re.fullmatch(r"X\d+[A-Za-z]?", t, re.I):
+        if re.fullmatch(X_TOKEN, t, re.I):
             rest = "_".join(toks[i + 1:])
             return re.sub(r"^(RM|ROOM)[\-_ ]*", "", rest, flags=re.I)
     return ""
@@ -356,20 +366,23 @@ def parse_switch_port(v):
     -> dict(raw, host, x, port)   (host is upper-cased; None when only X# given)
     """
     t = clean(v)
-    res = {"raw": t, "host": None, "x": None, "port": None}
+    res = {"raw": t, "host": None, "x": None, "port": None, "xid": None}
     if not t:
         return res
     m = HOST_RE.search(t)
     if m:
         res["host"] = m.group(1).upper()
         res["x"] = host_x(res["host"])
+        res["xid"] = host_xid(res["host"])
         nums = re.findall(r"\d+", t[m.end():])
         res["port"] = int(nums[-1]) if nums else None
         return res
-    m = re.search(r"(?<![A-Za-z0-9])X\s*(\d+)\s*[/\\]\s*[A-Za-z]*\s*(\d+(?:/\d+)*)", t, re.I)
+    m = re.search(r"(?<![A-Za-z0-9])X\s*(\d+)(?:\s*-\s*([A-Za-z]))?\s*[/\\]\s*[A-Za-z]*\s*(\d+(?:/\d+)*)",
+                  t, re.I)
     if m:
         res["x"] = int(m.group(1))
-        res["port"] = int(m.group(2).split("/")[-1])
+        res["xid"] = m.group(1) + ("-" + m.group(2).upper() if m.group(2) else "")
+        res["port"] = int(m.group(3).split("/")[-1])
     return res
 
 
@@ -607,7 +620,7 @@ def parse_notes_sections(g, start, end, rep):
                 entries.append({
                     "section": name, "component": comp, "row": rr,
                     "cell": a1(rr, new_c), "raw": new_raw,
-                    "host": sp["host"], "x": sp["x"], "port": sp["port"],
+                    "host": sp["host"], "x": sp["x"], "xid": sp["xid"], "port": sp["port"],
                     "vlan": norm_vlan(g.get(rr, vlan_c)), "vlan_raw": g.text(rr, vlan_c),
                 })
     return entries
@@ -742,13 +755,14 @@ def parse_notes(g, rep):
                       % (s["host"], new_hosts[s["host"]]["row"], s["row"]))
         else:
             new_hosts[s["host"]] = s
-    by_x = defaultdict(list)
+    by_x, by_xid = defaultdict(list), defaultdict(list)
     for s in new_hosts.values():
         if s["x"] is not None:
             by_x[s["x"]].append(s["host"])
-    for x, hosts in by_x.items():
+            by_xid[host_xid(s["host"])].append(s["host"])
+    for xid, hosts in by_xid.items():
         if len(hosts) > 1:
-            rep.error(T, "X%d is used by more than one new switch: %s" % (x, ", ".join(hosts)))
+            rep.error(T, "X%s is used by more than one new switch: %s" % (xid, ", ".join(hosts)))
 
     locs = OrderedDict()
     for s in new_hosts.values():
@@ -790,11 +804,15 @@ def parse_notes(g, rep):
             e["skip"] = True
             continue
         if e["host"] is None:
-            hosts = by_x.get(e["x"], [])
+            xid = e.get("xid") or str(e["x"])
+            hosts = by_xid.get(xid, []) if "-" in xid else by_x.get(e["x"], [])
             if len(hosts) == 1:
                 e["host"] = hosts[0]
+            elif len(hosts) > 1:
+                rep.error(T, "%s: X%s matches more than one new switch (%s) - say which one, e.g. X%s-A."
+                          % (ref, xid, ", ".join(hosts), xid))
             else:
-                rep.error(T, "%s: X%d does not match exactly one new switch." % (ref, e["x"]))
+                rep.error(T, "%s: X%s does not match any new switch." % (ref, xid))
         elif new_hosts and e["host"] not in new_hosts:
             hint = close_match(e["host"], new_hosts)
             rep.error(T, "%s: %s is not in any 'New Switches' list%s."
@@ -984,16 +1002,18 @@ def parse_drop(g, rep):
                 if (x["simple"] and d["x"] is not None and pos_re.fullmatch(x["p"])
                         and x["vlan"] != "TRUNK"):
                     pos[(d["x"], port)] = x
-    uplinks = None
-    core = [d for d in devices.values() if d["x"] == 1]
-    if core:
+    uplinks = None                     # [(core host, port, description)]
+    cores = [d for d in devices.values() if d["x"] == 1]
+    if cores:
         uplinks = []
-        for port, rows in sorted(core[0]["ports"].items()):
-            if X1_UPLINK_PORTS[0] <= port <= X1_UPLINK_PORTS[1]:
-                used = [x for x in rows if x["p"] and norm(x["p"]) != "reserved"]
-                if used:
-                    uplinks.append((port, used[0]["p"]))
+        for d in cores:
+            for port, rows in sorted(d["ports"].items()):
+                for x in rows:          # every row: Twe1/0/1 and Twe1/1/1 share port number 1
+                    m = HOST_RE.search(x["p"])
+                    if m and host_x(m.group(1)) not in CORE_X_NUMBERS:
+                        uplinks.append((d["host"], port, x["p"]))
     return {"devices": devices, "by_x": by_x, "pos": pos, "uplinks": uplinks,
+            "cores": [d["host"] for d in cores],
             "p_header": g.text(DROP_HEADER_ROW, wc) or "column %s" % DROP_WIRELESS_COL}
 
 
@@ -1048,17 +1068,37 @@ def check_drop(notes, diagram, drop, rep):
                               % (h, label, int(shown), have, word, "" if have == 1 else "s"))
 
     # X1 uplinks: one per access switch, each naming a real switch
-    if drop.get("uplinks") is not None and notes["new_hosts"]:
-        n_notes = sum(1 for s in notes["new_hosts"].values() if is_access(s))
-        if len(drop["uplinks"]) != n_notes:
-            rep.error(T, "Access switches: Notes lists %d, but %d uplink port(s) are in use on X1 (ports %d-%d)."
-                      % (n_notes, len(drop["uplinks"]), X1_UPLINK_PORTS[0], X1_UPLINK_PORTS[1]))
-        for port, text in drop["uplinks"]:
-            m = HOST_RE.search(text)
-            if m and m.group(1).upper() not in notes["new_hosts"]:
-                hint = close_match(m.group(1).upper(), notes["new_hosts"])
-                rep.warn(T, "X1 port %d description '%s' does not match a switch in Notes%s."
-                         % (port, text, " - possible typo of %s" % hint if hint else ""))
+    if drop.get("uplinks") is not None:
+        cores = drop.get("cores") or []
+        per_core = OrderedDict((c, 0) for c in cores)
+        for core, port, text in drop["uplinks"]:
+            per_core[core] = per_core.get(core, 0) + 1
+        if notes["new_hosts"]:
+            n_notes = sum(1 for s in notes["new_hosts"].values() if is_access(s))
+            if len(drop["uplinks"]) != n_notes:
+                where = ("X1" if len(cores) < 2 else
+                         " + ".join("%s (%d)" % (c, n) for c, n in per_core.items()))
+                rep.error(T, "Access switches: Notes lists %d, but %d uplink port(s) on %s name an "
+                             "access switch." % (n_notes, len(drop["uplinks"]), where))
+        if len(cores) == 2:
+            (a, na), (b, nb) = per_core.items()
+            if abs(na - nb) > (len(drop["uplinks"]) % 2):
+                rep.error(T, "Access switches are not split evenly between the two cores: %s has %d, "
+                             "%s has %d." % (a, na, b, nb))
+        elif len(cores) > 2:
+            rep.error(T, "%d X1 core switches found (%s); expected one, or a pair named X1-A and X1-B."
+                      % (len(cores), ", ".join(cores)))
+        seen = {}
+        for core, port, text in drop["uplinks"]:
+            host = HOST_RE.search(text).group(1).upper()
+            if host in seen:
+                rep.error(T, "%s is uplinked twice: X%s port %d and X%s port %d."
+                          % (host, host_xid(seen[host][0]), seen[host][1], host_xid(core), port))
+            seen.setdefault(host, (core, port))
+            if notes["new_hosts"] and host not in notes["new_hosts"]:
+                hint = close_match(host, notes["new_hosts"])
+                rep.warn(T, "X%s port %d description '%s' does not match a switch in Notes%s."
+                         % (host_xid(core), port, text, " - possible typo of %s" % hint if hint else ""))
 
     # Notes Section 1 patching: port present + VLAN correct
     for e in notes["entries"]:
@@ -1343,20 +1383,21 @@ def check_wired(g, notes, diagram, drop, rep):
         rep.error(T, "C9500-48Y4C-EDU X1 should have 1 in D or E (%s)." % "; ".join(de(x) for x in x1))
     x1p = pick("c9500_x1plus", pool=mdf_rows)
     x1p_blank = all(is_blank(x["d"]) and is_blank(x["e"]) for x in x1p)
-    if total_access > X1_PLUS_THRESHOLD:
+    cores = [h for h, s in notes["new_hosts"].items() if s["x"] == 1] or list(drop.get("cores") or [])
+    if len(cores) >= 2:
+        why = "%d X1 cores: %s; %d access switches detected" % (len(cores), ", ".join(cores), total_access)
         if not x1p:
-            rep.error(T, "C9500-48Y4C-EDU X1+ line not found, but it is required "
-                         "(%d access switches detected)." % total_access)
+            rep.error(T, "C9500-48Y4C-EDU X1+ line not found, but it is required (%s)." % why)
         elif not any(has_one(x) for x in x1p):
-            rep.error(T, "C9500-48Y4C-EDU X1+ should have 1 in D or E - %d access switches detected (%s)."
-                      % (total_access, "; ".join(de(x) for x in x1p)))
+            rep.error(T, "C9500-48Y4C-EDU X1+ should have 1 in D or E (%s) - %s."
+                      % ("; ".join(de(x) for x in x1p), why))
         else:
-            rep.note(T, "X1 and X1+ needed (%d access switches detected)" % total_access)
+            rep.note(T, "X1 and X1+ needed (%s)" % why)
     elif x1p_blank:
         rep.note(T, "Only 1 X1 needed (%d access switches detected)" % total_access)
     else:
-        rep.error(T, "C9500-48Y4C-EDU X1+ should be blank - only 1 X1 needed, %d access switches detected (%s)."
-                  % (total_access, "; ".join(de(x) for x in x1p)))
+        rep.error(T, "C9500-48Y4C-EDU X1+ should be blank - only 1 X1 core in the design, "
+                     "%d access switches detected (%s)." % (total_access, "; ".join(de(x) for x in x1p)))
 
     # ---- SFPs --------------------------------------------------------------
     sfp = pick("sfp", pool=mdf_rows)
