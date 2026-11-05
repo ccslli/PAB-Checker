@@ -133,6 +133,11 @@ QSplitter::handle {{ background: transparent; }}
 QStatusBar {{ background: {statusbar}; color: {muted}; border-top: 1px solid {rule}; }}
 QStatusBar::item {{ border: none; }}
 QStatusBar QCheckBox {{ padding: 2px 10px 2px 4px; }}
+QPushButton#themeToggle {{
+    background: {surface}; color: {ink}; border: 1px solid {border}; border-radius: 4px;
+    padding: 1px 10px; min-height: 18px; margin: 3px 8px 3px 4px; font-size: 9pt;
+}}
+QPushButton#themeToggle:hover {{ border-color: {focus_border}; }}
 QToolTip {{ background: {surface}; color: {ink}; border: 1px solid {border}; }}
 QFrame#loaderCard {{ background: {surface}; border: 1px solid {border}; border-radius: 10px; }}
 QLabel#loaderTitle {{ font-family: "Bahnschrift"; font-size: 14pt; color: {ink}; }}
@@ -420,9 +425,12 @@ class CheckerWindow(QMainWindow):
                                      % (core.WDATA_FIX_COL, core.WDATA_FIX_FIRST_ROW))
         self.fix_wireless.setChecked(core.wireless_fix_enabled())
         self.fix_wireless.toggled.connect(core.set_wireless_fix_enabled)
-        self.dark = QCheckBox("Dark mode")
-        self.dark.setChecked(INK == THEMES["dark"]["ink"])
-        self.dark.toggled.connect(self.set_dark_mode)
+        # bottom-right button: names the mode it switches TO ("Dark mode" while light)
+        self.dark = QPushButton()
+        self.dark.setObjectName("themeToggle")
+        self.dark.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.dark.clicked.connect(lambda: self.set_dark_mode(INK != THEMES["dark"]["ink"]))
+        self._label_theme_button()
         row2.addWidget(self.btn_run)
         row2.addWidget(self.btn_qa)
         row2.addSpacing(12)
@@ -469,9 +477,15 @@ class CheckerWindow(QMainWindow):
     def _make_leds(self):
         self.leds = {k: led_icon(c) for k, c in (("error", RED), ("warn", AMBER), ("ok", GREEN))}
 
+    def _label_theme_button(self):
+        dark = INK == THEMES["dark"]["ink"]
+        self.dark.setText("Light mode" if dark else "Dark mode")
+        self.dark.setToolTip("Switch to the %s theme" % ("light" if dark else "dark"))
+
     def set_dark_mode(self, on):
         apply_theme(QApplication.instance(), "dark" if on else "light")
         self.settings.setValue("dark_mode", bool(on))
+        self._label_theme_button()
         self._make_leds()
         if self.report is not None:
             self._redraw()
