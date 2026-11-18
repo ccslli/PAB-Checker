@@ -184,6 +184,15 @@ SWITCH_TABLE_SHEETS = ["video", "camera"]
 SWITCH_TABLE_HEADER_ROWS = 40    # how far down to look for the header
 # Also require the fixed Video cells above to be IOT_IPDVS in Drop_List?
 VIDEO_FIXED_CELLS_MUST_BE_IPDVS = True
+# Camera names: a Drop_List description (column P) that starts with a camera
+# number like "C1-12" ("C1-12 Interior camera - hallway") must match the camera
+# name in column A of the camera tab ("CB-03" counts too), comparing the first CAMERA_NAME_CHARS
+# characters (up to the first space).  Other descriptions (MAC addresses,
+# camera models, ...) aren't compared.  Differences are warnings, since naming
+# varies by site.
+CAMERA_NAME_COL = "A"
+CAMERA_NAME_CHARS = 5
+CAMERA_DESC_RE = re.compile(r"^\s*[A-Za-z]{1,2}\d{0,3}\s*-\s*\d{1,3}(?![0-9])")
 
 # ---- Wireless_Design_Data column A fix (runs before the checks) -------------
 # Column A from row 5 down is converted to real numbers (text '3' -> 3) and
@@ -1657,8 +1666,34 @@ def _ip_column(g, r0, nc):
     return nc - 1 if nc > 1 else None
 
 
-def check_switch_table(g, tab, drop, rep, covered):
-    """Verify each port under 'Switch Name' / 'Switch Port' is IOT_IPDVS in Drop_List."""
+def _camera_key(text):
+    """'C1-12 Interior camera' -> 'C1-12': first CAMERA_NAME_CHARS characters, up to the first space."""
+    t = re.sub(r"\s*-\s*", "-", clean(text)).strip()
+    return t.split()[0][:CAMERA_NAME_CHARS].upper() if t else ""
+
+
+def _check_camera_name(tab, r, cam_name, host, x, port, drop, rep):
+    """Drop_List description 'C1-12 ...' vs the camera name on this row (warnings only)."""
+    status, dev, rows, _ = drop_lookup(drop, host, x, port)
+    if status != "ok":
+        return
+    for d in rows:
+        if not CAMERA_DESC_RE.match(d["p"]):
+            continue                                   # MAC address, camera model, ... - not compared
+        want, got = _camera_key(d["p"]), _camera_key(cam_name)
+        if not got:
+            rep.warn("Drop_List", "%s port %d (row %d): description '%s', but %s row %d has no camera name."
+                     % (dev, port, d["row"], d["p"], tab, r))
+        elif want != got:
+            rep.warn("Drop_List", "%s port %d (row %d): description '%s' doesn't match camera '%s' "
+                                  "on %s row %d."
+                     % (dev, port, d["row"], d["p"], cam_name, tab, r))
+        return
+
+
+def check_switch_table(g, tab, drop, rep, covered, camera_names=False):
+    """Verify each port under 'Switch Name' / 'Switch Port' is IOT_IPDVS in Drop_List.
+    camera_names: also compare Drop_List descriptions with the camera names (camera tab)."""
     hdr = _switch_table_headers(g)
     if not hdr:
         return None
@@ -1699,7 +1734,8 @@ def check_switch_table(g, tab, drop, rep, covered):
                 continue
             seen[(x, port)] = (r, ip)
             covered.add((x, port))
-            _check_ipdvs_port(tab, ref, host, x, port, drop, rep)
+            if _check_ipdvs_port(tab, ref, host, x, port, drop, rep) and camera_names:
+                _check_camera_name(tab, r, g.text(r, col(CAMERA_NAME_COL)), host, x, port, drop, rep)
     if not n:
         rep.warn(tab, "'Switch Name' / 'Switch Port' header found (row %d, columns %s) but those "
                       "columns are empty beneath it."
@@ -1872,7 +1908,8 @@ def run_checks(grids):
     camera_table = False
     for k in SWITCH_TABLE_SHEETS:
         if grids.get(k):
-            found = guard(name[k], check_switch_table, grids[k], name[k], drop, rep, covered)
+            found = guard(name[k], check_switch_table, grids[k], name[k], drop, rep, covered,
+                          k == "camera")
             if k == "camera":
                 camera_table = found is not None
                 if not camera_table:
