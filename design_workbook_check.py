@@ -94,6 +94,11 @@ DROP_IPDVS_LABEL = "IOT_IPDVS"
 # cameras, so they are not expected on the Camera Information tab.
 DROP_IPDVS_NOT_CAMERA = ["Server", "UPS", "MVS", "Safer Access"]
 DROP_HEADER_ROW = 3              # column titles, used in messages
+# Notes 'Safer Access' ports for these components must be labelled exactly
+# "Safer Access (<name>)" in Drop_List column P.  Sites with two sets add 1 or 2:
+# "Safer Access (Main Entrance 1)".  When the Notes component has a number
+# (Main Entrance 2) the label must have the same number.
+SAFER_ACCESS_LABELS = ["Main Entrance", "Secondary Entrance", "Tertiary Entrance", "Security Desk"]
 # A Drop_List port is a POS port when its whole column P (Notes) text is one of
 # these, optionally followed by more words ("POS", "Dietician Office").  A word
 # inside an AP name (85Q008_B_DIET) doesn't count, and TRUNK ports never do.
@@ -1048,6 +1053,35 @@ def drop_lookup(drop, host, x, port):
     return "no_port", cands[0], [], via
 
 
+def safer_access_expected(component):
+    """Notes Safer Access component -> (accepted column P labels, text for messages),
+    or None when it isn't one of SAFER_ACCESS_LABELS."""
+    for name in SAFER_ACCESS_LABELS:
+        m = re.fullmatch(r"\s*%s\s*([12])?\s*" % r"\s+".join(map(re.escape, name.split())),
+                         clean(component), re.I)
+        if m:
+            if m.group(1):
+                label = "Safer Access (%s %s)" % (name, m.group(1))
+                return [label], "'%s'" % label
+            labels = ["Safer Access (%s)" % name] + ["Safer Access (%s %d)" % (name, n) for n in (1, 2)]
+            return labels, "'%s' (a 1 or 2 may be added for a second set: '%s')" % (labels[0], labels[1])
+    return None
+
+
+def _check_safer_access_label(T, ref, e, dev, rows, rep):
+    if norm(e["section"]) != norm("Safer Access"):
+        return
+    exp = safer_access_expected(e["component"])
+    if not exp:
+        return
+    labels, shown = exp
+    have = [re.sub(r"\s+", " ", r["p"]).strip() for r in rows]
+    if not any(h in labels for h in have):
+        rep.error(T, "%s: %s port %s (row %s) is labelled '%s' in column %s - it should be %s."
+                  % (ref, dev, e["port"], ", ".join(str(r["row"]) for r in rows),
+                     ", ".join(h or "blank" for h in have), DROP_WIRELESS_COL, shown))
+
+
 def check_drop(notes, diagram, drop, rep):
     T = "Drop_List"
     devs = drop["devices"]
@@ -1132,6 +1166,7 @@ def check_drop(notes, diagram, drop, rep):
             rep.error(T, "%s: Notes says VLAN %s but Drop_List has '%s' on %s port %s (row %s)."
                       % (ref, e["vlan_raw"], ", ".join(r["vlan_raw"] or "blank" for r in rows),
                          dev, e["port"], ", ".join(str(r["row"]) for r in rows)))
+        _check_safer_access_label(T, ref, e, dev, rows, rep)
 
 
 # =============================================================================
