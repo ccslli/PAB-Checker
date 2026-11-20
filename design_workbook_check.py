@@ -99,6 +99,15 @@ DROP_HEADER_ROW = 3              # column titles, used in messages
 # "Safer Access (Main Entrance 1)".  When the Notes component has a number
 # (Main Entrance 2) the label must have the same number.
 SAFER_ACCESS_LABELS = ["Main Entrance", "Secondary Entrance", "Tertiary Entrance", "Security Desk"]
+# Notes sections whose ports need their own description in Drop_List column P.
+# A port described only by the section name ("EUM", "WTMC", "LONWorks") or left
+# blank gets a warning to check it.  section -> Notes components checked
+# (None = every component in that section).
+GENERIC_LABEL_SECTIONS = OrderedDict([
+    ("EUM",      None),
+    ("WTMC",     None),
+    ("LONWorks", ["Chemical Feeder"]),
+])
 # A Drop_List port is a POS port when its whole column P (Notes) text is one of
 # these, optionally followed by more words ("POS", "Dietician Office").  A word
 # inside an AP name (85Q008_B_DIET) doesn't count, and TRUNK ports never do.
@@ -1068,6 +1077,18 @@ def safer_access_expected(component):
     return None
 
 
+def _generic_label(e, rows):
+    """True when a Notes EUM / WTMC / LONWorks port is described in Drop_List
+    column P by nothing but the section name (or not at all)."""
+    if e["section"] not in GENERIC_LABEL_SECTIONS:
+        return False
+    only = GENERIC_LABEL_SECTIONS[e["section"]]
+    if only and norm(e["component"]) not in {norm(c) for c in only}:
+        return False
+    bare = {norm(a) for a in NOTES_SECTIONS.get(e["section"], [e["section"]])} | {""}
+    return all(norm(r["p"]) in bare for r in rows)
+
+
 def _check_safer_access_label(T, ref, e, dev, rows, rep):
     if norm(e["section"]) != norm("Safer Access"):
         return
@@ -1149,6 +1170,7 @@ def check_drop(notes, diagram, drop, rep):
                          % (host_xid(core), port, text, " - possible typo of %s" % hint if hint else ""))
 
     # Notes Section 1 patching: port present + VLAN correct
+    generic = OrderedDict()            # section -> [(dev, port, rows, column P text)]
     for e in notes["entries"]:
         if e.get("skip"):
             continue
@@ -1167,6 +1189,16 @@ def check_drop(notes, diagram, drop, rep):
                       % (ref, e["vlan_raw"], ", ".join(r["vlan_raw"] or "blank" for r in rows),
                          dev, e["port"], ", ".join(str(r["row"]) for r in rows)))
         _check_safer_access_label(T, ref, e, dev, rows, rep)
+        if _generic_label(e, rows):
+            generic.setdefault(e["section"], []).append((dev, e["port"], rows))
+    for section, ports in generic.items():
+        rep.warn(T, "%d %s port(s) in Notes have only '%s' (or nothing) as their description in column %s - "
+                    "please check these ports to make sure the descriptions are correct:\n%s"
+                 % (len(ports), section, section, DROP_WIRELESS_COL, "\n".join(
+                     "          %s port %s (row %s): %s" % (dev, port, ", ".join(str(r["row"]) for r in rows),
+                                                          ", ".join("'%s'" % r["p"] if r["p"] else "blank"
+                                                                    for r in rows))
+                     for dev, port, rows in ports)))
 
 
 # =============================================================================
