@@ -369,6 +369,8 @@ class CheckerWindow(QMainWindow):
         self.loader = None
         self.pending_name = ""
         self.settings = QSettings("PAB Checker", "PAB Checker")
+        # restricted features: only for the Windows users in core.SPECIAL_USERS
+        self.special = core.special_access()
         self._make_leds()
 
         self.setWindowTitle(APP_TITLE)

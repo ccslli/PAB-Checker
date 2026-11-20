@@ -225,6 +225,15 @@ QA_SCRIPT_NAME = "QA_Automation_03_17v3.py"
 # Where the chosen QA folder is remembered between runs
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".pab_checker_settings.json")
 
+# ---- Restricted features ----------------------------------------------------
+# Windows usernames (the login name, not the display name) that see the
+# restricted features.  Upper/lower case doesn't matter.  To add someone, add
+# their username to this list, then push and rebuild the exe.  They can find
+# their username by typing  echo %USERNAME%  in Command Prompt.
+SPECIAL_USERS = [
+    "lli",
+]
+
 # =============================================================================
 # GENERIC HELPERS
 # =============================================================================
@@ -2522,6 +2531,23 @@ def run_qa_script(checked_name=None):
     print("\nRunning %s ...\n" % script)
     # same terminal; this script ends when the QA script ends
     subprocess.call(python + [script], cwd=os.path.dirname(script))
+
+
+def windows_username():
+    """The Windows login name of whoever is running this, e.g. 'lli'."""
+    name = os.environ.get("USERNAME") or ""
+    if not name:
+        try:
+            import getpass
+            name = getpass.getuser()
+        except Exception:
+            name = ""
+    return name.split("\\")[-1].strip().lower()          # DOMAIN\lli -> lli
+
+
+def special_access():
+    """True when this Windows user is in SPECIAL_USERS."""
+    return windows_username() in {u.strip().lower() for u in SPECIAL_USERS if u.strip()}
 
 
 def tab_order():
