@@ -631,6 +631,7 @@ def parse_notes_sections(g, start, end, rep):
                          % (name, col_letter(c), r, NOTES_EXPECTED_TITLE_COL))
             # header row: Component | Old Switch / Port | New Switch / Port | VLAN
             comp_c, new_c, vlan_c, first = c, c + NOTES_NEW_SWITCH_OFFSET, c + NOTES_VLAN_OFFSET, r + 1
+            old_c = None
             for hr in (r + 1, r + 2):
                 cells = g.row_cells(hr)
                 if any("component" in t.lower() for _, t in cells):
@@ -640,6 +641,8 @@ def parse_notes_sections(g, start, end, rep):
                             comp_c = cc
                         elif "new" in tl:
                             new_c = cc
+                        elif "old" in tl:
+                            old_c = cc
                         elif "vlan" in tl:
                             vlan_c = cc
                     first = hr + 1
@@ -657,6 +660,7 @@ def parse_notes_sections(g, start, end, rep):
                 entries.append({
                     "section": name, "component": comp, "row": rr,
                     "cell": a1(rr, new_c), "raw": new_raw,
+                    "old_raw": g.text(rr, old_c) if old_c else None,
                     "host": sp["host"], "x": sp["x"], "xid": sp["xid"], "port": sp["port"],
                     "vlan": norm_vlan(g.get(rr, vlan_c)), "vlan_raw": g.text(rr, vlan_c),
                 })
@@ -2655,7 +2659,8 @@ def check_workbook_report(wb, progress=None, fix_wireless=None):
     grids = read_grids(wb, progress)
     if progress:
         progress("Comparing the tabs")
-    rep, _ = run_checks(grids)
+    rep, parsed = run_checks(grids)
+    rep.parsed = parsed                  # kept for the restricted tools (Notes VLAN counts)
     if fix_lines is not None:
         rep.footer.append((WDATA_FIX_TITLE, fix_lines))
     return rep

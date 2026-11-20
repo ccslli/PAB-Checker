@@ -33,9 +33,9 @@ from datetime import datetime
 from PySide6.QtCore import QRectF, QSettings, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import (QBrush, QColor, QCursor, QGuiApplication, QIcon, QKeySequence,
                            QPainter, QPalette, QPen, QPixmap, QRadialGradient, QShortcut)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout,
-                               QHeaderView, QLabel, QMainWindow, QMessageBox, QPushButton,
-                               QSizePolicy, QSplitter, QTextBrowser, QTreeWidget, QTreeWidgetItem,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
+                               QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
+                               QRadioButton, QSizePolicy, QSplitter, QTextBrowser, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
 import design_workbook_check as core
@@ -138,6 +138,8 @@ QPushButton#themeToggle {{
     padding: 1px 10px; min-height: 18px; margin: 3px 8px 3px 4px; font-size: 9pt;
 }}
 QPushButton#themeToggle:hover {{ border-color: {focus_border}; }}
+QPushButton#hiddenSpot, QPushButton#hiddenSpot:hover, QPushButton#hiddenSpot:pressed,
+QPushButton#hiddenSpot:focus {{ background: transparent; border: none; padding: 0; margin: 0; }}
 QToolTip {{ background: {surface}; color: {ink}; border: 1px solid {border}; }}
 QFrame#loaderCard {{ background: {surface}; border: 1px solid {border}; border-radius: 10px; }}
 QLabel#loaderTitle {{ font-family: "Bahnschrift"; font-size: 14pt; color: {ink}; }}
@@ -474,6 +476,16 @@ class CheckerWindow(QMainWindow):
         self.status.setObjectName("status")
         self.statusBar().addWidget(self.status, 1)
         self.statusBar().addPermanentWidget(self.dark)          # bottom right corner
+        if self.special:
+            # restricted tools: an invisible button just right of the theme button
+            # (core.SPECIAL_USERS only - for everyone else it doesn't exist)
+            self.hidden_spot = QPushButton()
+            self.hidden_spot.setObjectName("hiddenSpot")
+            self.hidden_spot.setFixedSize(26, 22)
+            self.hidden_spot.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.hidden_spot.setFlat(True)
+            self.hidden_spot.clicked.connect(self.open_special_tools)
+            self.statusBar().addPermanentWidget(self.hidden_spot)
         self._empty_state()
 
     def _make_leds(self):
@@ -720,6 +732,17 @@ class CheckerWindow(QMainWindow):
                 '<td style="color:%s; padding-top:2px; padding-bottom:2px">%s%s</td></tr></table>'
                 % (bar, text_color, lead, esc(msg)))
 
+    def open_special_tools(self):
+        if not self.special:
+            return
+        dlg = getattr(self, "special_dialog", None)
+        if dlg is None:
+            dlg = self.special_dialog = ScanVlanDialog(self)
+        dlg.refresh_notes()
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
     def _jump(self):
         items = self.tree.selectedItems()
         if items:
@@ -860,6 +883,176 @@ class CheckerWindow(QMainWindow):
     def _error(self, msg, exc):
         traceback.print_exc()
         QMessageBox.critical(self, APP_TITLE, "%s\n\n%s: %s" % (msg, type(exc).__name__, exc))
+
+
+class ScanVlanDialog(QDialog):
+    """Restricted tool (core.SPECIAL_USERS): special VLANs in a site scan vs Notes."""
+
+    def __init__(self, win):
+        super().__init__(win)
+        import scan_vlan_check as svc
+        self.svc, self.win = svc, win
+        self.settings = win.settings
+        self.setWindowTitle("Site Scan VLANs")
+        self.resize(900, 640)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 12)
+        lay.setSpacing(10)
+
+        self.notes_label = QLabel()
+        self.notes_label.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(self.notes_label)
+
+        fmt_row = QHBoxLayout()
+        lab = QLabel("Scan format")
+        lab.setObjectName("fieldLabel")
+        fmt_row.addWidget(lab)
+        self.fmt_group = QButtonGroup(self)
+        self.fmt_buttons = {}
+        saved = self.settings.value("scan_vlans/format", "new") or "new"
+        tips = {"original": "The older scan files (VLAN in column E)",
+                "new": "Network Scanner's Interfaces Report (VLAN in column F)"}
+        for key, f in svc.FORMATS.items():
+            rb = QRadioButton(f["title"])
+            rb.setToolTip(tips.get(key, ""))
+            rb.setChecked(key == saved)
+            self.fmt_group.addButton(rb)
+            self.fmt_buttons[key] = rb
+            fmt_row.addWidget(rb)
+        fmt_row.addStretch(1)
+        lay.addLayout(fmt_row)
+
+        file_row = QHBoxLayout()
+        lab = QLabel("Scan file")
+        lab.setObjectName("fieldLabel")
+        self.path = QLineEdit(self.settings.value("scan_vlans/file", "") or "")
+        self.path.setPlaceholderText("Browse... or paste the scan file's path")
+        browse = QPushButton("Browse...")
+        browse.clicked.connect(self.browse)
+        self.btn_run = QPushButton("Check scan")
+        self.btn_run.setObjectName("primary")
+        self.btn_run.clicked.connect(self.run)
+        file_row.addWidget(lab)
+        file_row.addWidget(self.path, 1)
+        file_row.addWidget(browse)
+        file_row.addWidget(self.btn_run)
+        lay.addLayout(file_row)
+
+        self.view = QTextBrowser()
+        self.view.setOpenLinks(False)
+        self.view.document().setDocumentMargin(14)
+        lay.addWidget(self.view, 1)
+
+        bottom = QHBoxLayout()
+        self.btn_copy = QPushButton("Copy results")
+        self.btn_copy.setEnabled(False)
+        self.btn_copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.text))
+        close = QPushButton("Close")
+        close.clicked.connect(self.close)
+        bottom.addStretch(1)
+        bottom.addWidget(self.btn_copy)
+        bottom.addWidget(close)
+        lay.addLayout(bottom)
+        self.text = ""
+        self.view.setHtml('<p style="color:%s">Pick the scan file and its format, then Check scan.</p>' % MUTED)
+
+    def fmt(self):
+        return next(k for k, b in self.fmt_buttons.items() if b.isChecked())
+
+    def notes(self):
+        rep = self.win.report
+        parsed = getattr(rep, "parsed", None) if rep is not None else None
+        return (parsed or {}).get("notes")
+
+    def refresh_notes(self):
+        if self.notes() is not None:
+            self.notes_label.setText('<span style="color:%s">Notes from</span> <b>%s</b> '
+                                     '<span style="color:%s">(checked %s)</span>'
+                                     % (MUTED, esc(self.win.checked_name), MUTED,
+                                        self.win.checked_at.strftime("%H:%M")))
+        else:
+            self.notes_label.setText('<span style="color:%s">Run checks on the workbook first - '
+                                     'its Notes are what the scan is compared with.</span>' % AMBER)
+
+    def browse(self):
+        start = self.path.text().strip() or self.settings.value("scan_vlans/folder", "") or ""
+        path, _ = QFileDialog.getOpenFileName(self, "Select the scan file", start,
+                                              "Scan files (*.xlsx *.xlsm *.csv);;All files (*.*)")
+        if path:
+            self.path.setText(os.path.normpath(path))
+            self.settings.setValue("scan_vlans/folder", os.path.dirname(path))
+
+    def run(self):
+        notes = self.notes()
+        self.refresh_notes()
+        if notes is None:
+            QMessageBox.information(self, "Site Scan VLANs", "Run checks on the workbook first.")
+            return
+        path = self.path.text().strip().strip('"')
+        if not os.path.isfile(path):
+            QMessageBox.warning(self, "Site Scan VLANs", "Can't find the scan file:\n%s" % (path or "(none)"))
+            return
+        fmt = self.fmt()
+        self.settings.setValue("scan_vlans/file", path)
+        self.settings.setValue("scan_vlans/format", fmt)
+        QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        try:
+            ports, info = self.svc.read_scan(path, fmt)
+            groups, other = self.svc.check(ports, notes)
+        except Exception as exc:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "Site Scan VLANs", "The scan file couldn't be read.\n\n%s" % exc)
+            return
+        QApplication.restoreOverrideCursor()
+        self.show_results(path, fmt, info, groups, other)
+
+    def show_results(self, path, fmt, info, groups, other):
+        svc, row = self.svc, CheckerWindow._row
+        html_parts, text = [], []
+
+        def head(title):
+            html_parts.append('<p style="font-family:%s; font-size:14pt; color:%s; margin-top:16px; '
+                              'margin-bottom:6px">%s</p>' % (LABEL_FONT, INK, esc(title)))
+            text.extend(["", title, "-" * len(title)])
+
+        def line(level, msg):
+            html_parts.append(row(level, msg))
+            text.append(("[%s] " % level if level in ("ERROR", "WARN") else "") + msg)
+
+        bad = sum(1 for g in groups if not g["ok"])
+        head("%s  (%s)" % (os.path.basename(path), svc.FORMATS[fmt]["title"]))
+        line("NOTE", "Compared with the Notes of %s." % self.win.checked_name)
+        for i in info:
+            line("NOTE", i)
+
+        head("Special VLANs vs Notes")
+        for g in groups:
+            lab = "%s (%s)" % (svc.vlan_label(g["vlans"]), g["name"])
+            if g["ok"]:
+                line("OK", "%s: %d active in the scan = %d in Notes." % (lab, len(g["scan"]), len(g["notes"])))
+                continue
+            line("ERROR", "%s: %d active in the scan, but Notes (%s) lists %d."
+                 % (lab, len(g["scan"]), " + ".join(g["sections"]), len(g["notes"])))
+            for p in g["scan"]:
+                line("NOTE", "    scan:  %s  (VLAN %s)" % (svc.port_text(p), p["vlan_raw"]))
+            for e in g["notes"]:
+                line("NOTE", "    Notes: %s / %s  -  %s" % (e["section"], e["component"],
+                                                          e.get("old_raw") or e.get("raw") or ""))
+
+        head("Other active VLANs")
+        if not other:
+            line("OK", "No active ports on VLANs outside 2, 10-90, 21, 100 and trunk.")
+        for v, ps in other.items():
+            line("WARN", "VLAN %s: %d active port(s) - not one of the expected VLANs." % (v, len(ps)))
+            for p in ps:
+                line("NOTE", "    %s" % svc.port_text(p))
+
+        self.view.setHtml('<div style="font-family:\'Segoe UI\', sans-serif; font-size:10pt">%s</div>'
+                          % "".join(html_parts))
+        self.text = "\n".join(text).strip()
+        self.btn_copy.setEnabled(True)
+        self.setWindowTitle("Site Scan VLANs - %s" % ("all special VLANs match Notes" if not bad
+                                                      else "%d VLAN group(s) differ from Notes" % bad))
 
 
 def embedded_icon():
