@@ -102,12 +102,14 @@ SAFER_ACCESS_LABELS = ["Main Entrance", "Secondary Entrance", "Tertiary Entrance
 # Notes sections whose ports need their own description in Drop_List column P.
 # A port described only by the section name ("EUM", "WTMC", "LONWorks") or left
 # blank gets a warning to check it.  section -> Notes components checked
-# (None = every component in that section).
+# (None = every component in that section).  Ports on the switches in
+# GENERIC_LABEL_SKIP_X (X0, and X66 on older designs) aren't checked.
 GENERIC_LABEL_SECTIONS = OrderedDict([
     ("EUM",      None),
     ("WTMC",     None),
-    ("LONWorks", ["Chemical Feeder"]),
+    ("LONWorks", None),
 ])
+GENERIC_LABEL_SKIP_X = (0, 66)
 # A Drop_List port is a POS port when its whole column P (Notes) text is one of
 # these, optionally followed by more words ("POS", "Dietician Office").  A word
 # inside an AP name (85Q008_B_DIET) doesn't count, and TRUNK ports never do.
@@ -1078,9 +1080,9 @@ def safer_access_expected(component):
 
 
 def _generic_label(e, rows):
-    """True when a Notes EUM / WTMC / LONWorks port is described in Drop_List
-    column P by nothing but the section name (or not at all)."""
-    if e["section"] not in GENERIC_LABEL_SECTIONS:
+    """True when a Notes EUM / WTMC / LONWorks port (not on X0 / X66) is described
+    in Drop_List column P by nothing but the section name (or not at all)."""
+    if e["section"] not in GENERIC_LABEL_SECTIONS or e["x"] in GENERIC_LABEL_SKIP_X:
         return False
     only = GENERIC_LABEL_SECTIONS[e["section"]]
     if only and norm(e["component"]) not in {norm(c) for c in only}:
