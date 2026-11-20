@@ -475,9 +475,8 @@ class CheckerWindow(QMainWindow):
         self.status = QLabel()
         self.status.setObjectName("status")
         self.statusBar().addWidget(self.status, 1)
-        self.statusBar().addPermanentWidget(self.dark)          # bottom right corner
         if self.special:
-            # restricted tools: an invisible button just right of the theme button
+            # restricted tools: an invisible button just left of the theme button
             # (core.SPECIAL_USERS only - for everyone else it doesn't exist)
             self.hidden_spot = QPushButton()
             self.hidden_spot.setObjectName("hiddenSpot")
@@ -486,6 +485,7 @@ class CheckerWindow(QMainWindow):
             self.hidden_spot.setFlat(True)
             self.hidden_spot.clicked.connect(self.open_special_tools)
             self.statusBar().addPermanentWidget(self.hidden_spot)
+        self.statusBar().addPermanentWidget(self.dark)          # bottom right corner
         self._empty_state()
 
     def _make_leds(self):
