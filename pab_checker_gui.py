@@ -422,7 +422,7 @@ class CheckerWindow(QMainWindow):
         self.btn_copy.clicked.connect(self.copy_results)
         self.only_issues = QCheckBox("Only show tabs with issues")
         self.only_issues.toggled.connect(self._redraw)
-        self.fix_wireless = QCheckBox("Fix Wireless_Design_Data column %s" % core.WDATA_FIX_COL)
+        self.fix_wireless = QCheckBox("Fix network tags in WDD")
         self.fix_wireless.setToolTip("Before each check, convert Wireless_Design_Data column %s "
                                      "(row %d down) to numbers and format it \"0\". "
                                      "The result is shown at the bottom of the results."
