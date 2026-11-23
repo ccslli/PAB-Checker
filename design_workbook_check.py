@@ -1075,9 +1075,10 @@ def drop_lookup(drop, host, x, port):
     return "no_port", cands[0], [], via
 
 
-def safer_access_expected(component):
+def safer_access_expected(component, sets=1):
     """Notes Safer Access component -> (accepted column P labels, text for messages),
-    or None when it isn't one of SAFER_ACCESS_LABELS."""
+    or None when it isn't one of SAFER_ACCESS_LABELS.  sets = how many of this
+    door Notes lists: the numbered labels are only suggested when it is more than 1."""
     for name in SAFER_ACCESS_LABELS:
         m = re.fullmatch(r"\s*%s\s*([12])?\s*" % r"\s+".join(map(re.escape, name.split())),
                          clean(component), re.I)
@@ -1086,7 +1087,9 @@ def safer_access_expected(component):
                 label = "Safer Access (%s %s)" % (name, m.group(1))
                 return [label], "'%s'" % label
             labels = ["Safer Access (%s)" % name] + ["Safer Access (%s %d)" % (name, n) for n in (1, 2)]
-            return labels, "'%s' (a 1 or 2 may be added for a second set: '%s')" % (labels[0], labels[1])
+            if sets > 1:
+                return labels, "'%s' or '%s'" % (labels[1], labels[2])
+            return labels, "'%s'" % labels[0]
     return None
 
 
@@ -1100,10 +1103,18 @@ def _generic_label(e, rows):
     return all(norm(r["p"]) in bare for r in rows)
 
 
-def _check_safer_access_label(T, ref, e, dev, rows, rep):
+def _safer_door(component):
+    """'Main Entrance 2' -> 'main entrance' (None for other components)."""
+    for name in SAFER_ACCESS_LABELS:
+        if re.fullmatch(r"\s*%s\s*([12])?\s*" % r"\s+".join(map(re.escape, name.split())), clean(component), re.I):
+            return name.lower()
+    return None
+
+
+def _check_safer_access_label(T, ref, e, dev, rows, rep, sets=None):
     if norm(e["section"]) != norm("Safer Access"):
         return
-    exp = safer_access_expected(e["component"])
+    exp = safer_access_expected(e["component"], (sets or {}).get(_safer_door(e["component"]), 1))
     if not exp:
         return
     labels, shown = exp
@@ -1182,6 +1193,8 @@ def check_drop(notes, diagram, drop, rep):
 
     # Notes Section 1 patching: port present + VLAN correct
     generic = OrderedDict()            # section -> [(dev, port, rows, column P text)]
+    safer_sets = Counter(_safer_door(e["component"]) for e in notes["entries"]
+                         if norm(e["section"]) == norm("Safer Access") and not e.get("skip"))
     for e in notes["entries"]:
         if e.get("skip"):
             continue
@@ -1199,7 +1212,7 @@ def check_drop(notes, diagram, drop, rep):
             rep.error(T, "%s: Notes says VLAN %s but Drop_List has '%s' on %s port %s (row %s)."
                       % (ref, e["vlan_raw"], ", ".join(r["vlan_raw"] or "blank" for r in rows),
                          dev, e["port"], ", ".join(str(r["row"]) for r in rows)))
-        _check_safer_access_label(T, ref, e, dev, rows, rep)
+        _check_safer_access_label(T, ref, e, dev, rows, rep, safer_sets)
         if _generic_label(e, rows):
             generic.setdefault(e["section"], []).append((dev, e["port"], rows))
     for section, ports in generic.items():
