@@ -282,8 +282,10 @@ def norm_description(t):
     return t
 
 
-# Switches whose ports aren't looked up in Drop List Draft (the core, as in PT Checker)
-DESIGN_SKIP_X = {1}
+# Switches whose ports aren't looked up in Drop List Draft (QA'd separately)
+DESIGN_SKIP_X = {0, 1, 66}
+# VLANs that count as the same one (2 and 21 are now a shared VLAN)
+SAME_VLANS = [{2, 21}]
 # Column J text that means "no description given" (normal data ports)
 DLD_NO_DESCRIPTION = ["Non-Access Point"]
 # Scan descriptions that mark an AP port
@@ -308,7 +310,7 @@ def check_design(ports, index):
     shifted, so those two aren't required for them (AP = an AP name in J, a jack
     label in F ending -W1, or an AP as the port's CDP / LLDP neighbor).
     Left out: links to other switches (a neighbor with an X#), module ports,
-    the switches in DESIGN_SKIP_X.  -> [(level, message, scan port)]"""
+    the switches in DESIGN_SKIP_X (X0, X1, X66).  VLAN 2 and 21 count as one.  -> [(level, message, scan port)]"""
     issues, no_x = [], OrderedDict()
     skip_desc = {norm_description(t) for t in DLD_NO_DESCRIPTION}
     for p in ports:
@@ -330,6 +332,7 @@ def check_design(ports, index):
             {norm_description(n) for n in p["neighbors"]}
         scan_texts.discard("")
         vlan_ok = lambda d: d["vlan"] == p["vlan"] or (p["vlan"] == "trunk" and d["vlan"] in (100, "trunk")) \
+            or any(d["vlan"] in same and p["vlan"] in same for same in SAME_VLANS) \
             or not isinstance(p["vlan"], int) and p["vlan"] != "trunk"
         desc_ok = lambda d: (not scan_texts or norm_description(d["description"]) in skip_desc
                              or norm_description(d["description"]) in scan_texts)
