@@ -286,6 +286,10 @@ def norm_description(t):
 DESIGN_SKIP_X = {1}
 # Column J text that means "no description given" (normal data ports)
 DLD_NO_DESCRIPTION = ["Non-Access Point"]
+# Scan descriptions that mark an AP port
+AP_DESCRIPTION_RE = re.compile(r"wireless\s*access\s*point|^\s*ap\b", re.I)
+# VLANs an AP port can show in the scan for VLAN 100 in Drop List Draft
+AP_SCAN_VLANS = {100, "trunk", ""}
 AP_NAME_RE = re.compile(r"^\d{2}[A-Za-z]\d{3}_")             # RACKID_... without an X# = an AP name
 
 
@@ -337,9 +341,10 @@ def check_design(ports, index):
         ref = "%s - %s row %d%s" % (where, DLD_SHEET, d["row"],
                                      " (also on row%s %s)" % ("s" if len(also) > 1 else "",
                                                                ", ".join(map(str, also))) if also else "")
-        # AP port: an AP name in J, a wireless jack (F ends -W1) or an AP as the scan's neighbor
+        # AP port: an AP name in J, a wireless jack (F ends -W1), an AP as the scan's neighbor
+        # or 'Wireless Access Points' as the scan's description
         ap = (is_ap_name(d["description"]) or re.search(r"-\s*W\d+\s*$", d["jack"], re.I)
-              or any(is_ap_name(n) for n in p["neighbors"]))
+              or any(is_ap_name(n) for n in p["neighbors"]) or AP_DESCRIPTION_RE.search(p["description"]))
         if not ap and d["patched"].upper() != DLD_PATCHED:
             issues.append(("ERROR", "%s: column %s is '%s', should be %s."
                            % (ref, DLD_COLS["patched"], d["patched"] or "blank", DLD_PATCHED), p))
@@ -347,10 +352,10 @@ def check_design(ports, index):
             issues.append(("ERROR", "%s: no new switch / port in columns %s / %s (%s / %s)."
                            % (ref, DLD_COLS["new_x"], DLD_COLS["new_port"],
                               d["new_x"] or "blank", d["new_port"] or "blank"), p))
-        if not vlan_ok(d):
+        if not vlan_ok(d) and not (ap and d["vlan"] == 100 and p["vlan"] in AP_SCAN_VLANS):
             issues.append(("ERROR", "%s: column %s (Existing VLAN) is %s, the scan has VLAN %s."
                            % (ref, DLD_COLS["vlan"], d["vlan_raw"] or "blank", p["vlan_raw"] or "blank"), p))
-        if not desc_ok(d):
+        if not ap and not desc_ok(d):            # AP ports are verified separately
             scan_has = ["description '%s'" % p["description"]] if p["description"] else []
             if p["neighbors"]:
                 scan_has.append("neighbor %s" % ", ".join(p["neighbors"]))
