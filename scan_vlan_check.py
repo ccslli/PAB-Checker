@@ -273,12 +273,23 @@ def design_index(rows):
     return index
 
 
+# Descriptions that mean the same device (old name -> the name used now).
+# Each group: the first name is the current one; the others match it.
+DESCRIPTION_ALIASES = [
+    ["CyberShift Clocks", "CyberShift Clock", "Cybershift Time Clock", "Cybershift Time Clocks"],
+]
+
+
 def norm_description(t):
-    """Case and spaces ignored; a MAC address in any format -> its 12 hex digits."""
+    """Case and spaces ignored; a MAC address in any format -> its 12 hex digits;
+    an old name in DESCRIPTION_ALIASES -> the current one."""
     t = re.sub(r"\s+", " ", t or "").strip().lower()
     hexes = re.sub(r"[.:\-\s]", "", t)
     if re.fullmatch(r"[0-9a-f]{12}", hexes):
         return hexes
+    for group in DESCRIPTION_ALIASES:
+        if t in {re.sub(r"\s+", " ", g).strip().lower() for g in group}:
+            return group[0].lower()
     return t
 
 
