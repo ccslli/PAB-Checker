@@ -886,14 +886,14 @@ class CheckerWindow(QMainWindow):
 
 
 class ScanVlanDialog(QDialog):
-    """Restricted tool (core.SPECIAL_USERS): special VLANs in a site scan vs Notes."""
+    """Restricted tool (core.SPECIAL_USERS): QA Check - site scan vs Notes and the design file."""
 
     def __init__(self, win):
         super().__init__(win)
         import scan_vlan_check as svc
         self.svc, self.win = svc, win
         self.settings = win.settings
-        self.setWindowTitle("Site Scan VLANs")
+        self.setWindowTitle("QA Check")
         self.resize(900, 640)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 12)
@@ -1006,15 +1006,15 @@ class ScanVlanDialog(QDialog):
         notes = self.notes()
         self.refresh_notes()
         if notes is None:
-            QMessageBox.information(self, "Site Scan VLANs", "Run checks on the workbook first.")
+            QMessageBox.information(self, "QA Check", "Run checks on the workbook first.")
             return
         path = self.path.text().strip().strip('"')
         if not os.path.isfile(path):
-            QMessageBox.warning(self, "Site Scan VLANs", "Can't find the scan file:\n%s" % (path or "(none)"))
+            QMessageBox.warning(self, "QA Check", "Can't find the scan file:\n%s" % (path or "(none)"))
             return
         design = self.design.text().strip().strip('"')
         if design and not os.path.isfile(design):
-            QMessageBox.warning(self, "Site Scan VLANs", "Can't find the design file:\n%s" % design)
+            QMessageBox.warning(self, "QA Check", "Can't find the design file:\n%s" % design)
             return
         fmt = self.fmt()
         self.settings.setValue("scan_vlans/design", design)
@@ -1026,7 +1026,7 @@ class ScanVlanDialog(QDialog):
             groups, other = self.svc.check(ports, notes)
         except Exception as exc:
             QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, "Site Scan VLANs", "The scan file couldn't be read.\n\n%s" % exc)
+            QMessageBox.critical(self, "QA Check", "The scan file couldn't be read.\n\n%s" % exc)
             return
         dld = None
         if design:
@@ -1095,7 +1095,7 @@ class ScanVlanDialog(QDialog):
                           % "".join(html_parts))
         self.text = "\n".join(text).strip()
         self.btn_copy.setEnabled(True)
-        self.setWindowTitle("Site Scan VLANs - %s" % ("all special VLANs match Notes" if not bad
+        self.setWindowTitle("QA Check - %s" % ("all special VLANs match Notes" if not bad
                                                       else "%d VLAN group(s) differ from Notes" % bad))
 
 
