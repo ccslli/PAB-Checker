@@ -433,6 +433,19 @@ def notes_ports(notes, sections):
     return out
 
 
+def design_note(p, index):
+    """' - Drop List Draft row 47: VLAN 20, column U 'P-ABDN'' for a scan port that
+    is in Drop List Draft ('' when there's no design file or it isn't there)."""
+    if not index or p["x"] is None or p["port"] is None:
+        return ""
+    rows = index.get((p["x"], p["port"]))
+    if not rows:
+        return " - not in %s" % DLD_SHEET
+    return " - %s %s" % (DLD_SHEET, "; ".join(
+        "row %d: VLAN %s, column %s '%s'" % (d["row"], d["vlan_raw"] or "blank", DLD_COLS["patched"],
+                                             d["patched"] or "blank") for d in rows))
+
+
 def not_a_drop(p):
     """Uplink module ports, links to other switches and the X0 / X1 / X66 switches."""
     return (p["port"] is None or p["x"] in DESIGN_SKIP_X

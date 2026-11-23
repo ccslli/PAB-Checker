@@ -1037,9 +1037,9 @@ class ScanVlanDialog(QDialog):
                 dld = (design, None, 0, [("ERROR", "The design file couldn't be read: %s" % exc, None)])
         groups, other = self.svc.check(ports, notes, every, index)
         QApplication.restoreOverrideCursor()
-        self.show_results(path, fmt, info, groups, other, dld)
+        self.show_results(path, fmt, info, groups, other, dld, index)
 
-    def show_results(self, path, fmt, info, groups, other, dld=None):
+    def show_results(self, path, fmt, info, groups, other, dld=None, index=None):
         svc, row = self.svc, CheckerWindow._row
         html_parts, text = [], []
 
@@ -1084,7 +1084,7 @@ class ScanVlanDialog(QDialog):
         for v, ps in other.items():
             line("WARN", "VLAN %s: %d active port(s) - not one of the expected VLANs." % (v, len(ps)))
             for p in ps:
-                line("NOTE", "    %s" % svc.port_text(p))
+                line("NOTE", "    %s%s" % (svc.port_text(p), svc.design_note(p, index)))
 
         if dld:
             dpath, source, n, issues = dld
