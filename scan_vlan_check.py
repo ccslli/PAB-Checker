@@ -366,7 +366,9 @@ def check_design(ports, index):
         # or 'Wireless Access Points' as the scan's description
         ap = (is_ap_name(d["description"]) or re.search(r"-\s*W\d+\s*$", d["jack"], re.I)
               or any(is_ap_name(n) for n in p["neighbors"]) or AP_DESCRIPTION_RE.search(p["description"]))
-        if not ap and d["patched"].upper() != DLD_PATCHED:
+        # a DIRECT connection (column F) with a new switch / port doesn't need a P
+        direct = "DIRECT" in d["jack"].upper() and has_new(d)
+        if not ap and not direct and d["patched"].upper() != DLD_PATCHED:
             issues.append(("ERROR", "%s: column %s is '%s', should be %s."
                            % (ref, DLD_COLS["patched"], d["patched"] or "blank", DLD_PATCHED), p))
         if not ap and not has_new(d):
@@ -386,6 +388,20 @@ def check_design(ports, index):
             issues.append(("WARN", "%s: column %s is '%s', the scan has %s."
                            % (ref, DLD_COLS["description"], d["description"] or "blank",
                               " and ".join(scan_has)), p))
+    # an A / B pair listed on several rows: exactly one of them should carry the new switch / port
+    has_new = lambda d: core.norm(d["new_x"]) not in ("", "0") and core.norm(d["new_port"]) not in ("", "0")
+    for (x, port), rows in sorted(index.items()):
+        if len(rows) < 2 or x in DESIGN_SKIP_X:
+            continue
+        filled = [d for d in rows if has_new(d)]
+        where = "X%s port %s is on %s rows %s" % (x, port, DLD_SHEET, ", ".join(str(d["row"]) for d in rows))
+        if len(filled) > 1:
+            issues.append(("ERROR", "%s, and %d of them have a new switch / port (%s) - only one should."
+                           % (where, len(filled), "; ".join("row %d: %s / %s" % (d["row"], d["new_x"], d["new_port"])
+                                                             for d in filled)), None))
+        elif not filled:
+            issues.append(("WARN", "%s, but none of them has a new switch / port in columns %s / %s."
+                           % (where, DLD_COLS["new_x"], DLD_COLS["new_port"]), None))
     for host, n in no_x.items():
         issues.append(("WARN", "%s: no X# could be read for its %d connected port(s), so they weren't looked up "
                                "in %s." % (host, n, DLD_SHEET), None))
