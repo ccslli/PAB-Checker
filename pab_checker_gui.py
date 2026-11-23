@@ -762,16 +762,18 @@ class CheckerWindow(QMainWindow):
                              % self.report.count("ERROR")):
                 return
         script = self._find_qa_script()
-        if not script or not self._qa_folder_ready(os.path.dirname(script)):
+        if not script:
             return
         python = core.python_for_scripts()      # an .exe can't run .py files itself
         if not python:
             QMessageBox.warning(self, APP_TITLE, "Python was not found on this PC, so the DOE QA script "
                                 "can't be started from here.\n\nRun it from VS Code or a terminal instead.")
             return
-        flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+        self.qa_details = "Script:  %s\nPython:  %s" % (script, " ".join(python))
+        if not self._qa_folder_ready(os.path.dirname(script)):
+            return
         try:
-            subprocess.Popen(python + [script], cwd=os.path.dirname(script), creationflags=flags)
+            core.start_qa_window(python, script)
         except Exception as exc:
             self._error("Could not start the DOE QA script.", exc)
             return
@@ -836,8 +838,9 @@ class CheckerWindow(QMainWindow):
                 if not self.checked_name or core.same_workbook(found, self.checked_name):
                     note = ("This matches the workbook you just checked." if self.checked_name
                             else "No workbook has been checked yet in this window.")
-                    if self._ask("Excel file found in the DOE QA folder:\n\n%s\n\n%s\n\n"
-                                 "Run the DOE QA script on this file?" % (found, note)):
+                    if self._ask("Excel file found in the DOE QA folder:\n\n%s\n\n%s\n\n%s\n\n"
+                                 "Run the DOE QA script on this file?"
+                                 % (found, note, getattr(self, "qa_details", ""))):
                         return True
                     QMessageBox.information(self, APP_TITLE, "DOE QA script aborted.")
                     return False

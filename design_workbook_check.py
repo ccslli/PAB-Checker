@@ -2537,6 +2537,40 @@ def python_for_scripts():
     return None
 
 
+def clean_child_environment():
+    """Environment for starting the PC's own Python from the PyInstaller .exe.
+    The .exe points Tcl/Tk and its own settings at its temporary folder, and
+    Windows passes that on - the QA script's Python would then load the .exe's
+    copies (tkinter file dialogs fail, or Python doesn't start at all)."""
+    env = dict(os.environ)
+    if getattr(sys, "frozen", False):
+        bundle = os.path.normcase(getattr(sys, "_MEIPASS", "") or "")
+        for k in list(env):
+            if k.startswith(("_PYI", "_MEIPASS", "PYINSTALLER")) or (
+                    bundle and k in ("TCL_LIBRARY", "TK_LIBRARY", "PYTHONHOME", "PYTHONPATH")
+                    and bundle in os.path.normcase(env[k])):
+                env.pop(k, None)
+        if bundle:                              # the .exe's folder at the front of PATH
+            env["PATH"] = os.pathsep.join(p for p in env.get("PATH", "").split(os.pathsep)
+                                          if bundle not in os.path.normcase(p))
+        try:                                    # undo the .exe's DLL folder for child processes
+            import ctypes
+            ctypes.windll.kernel32.SetDllDirectoryW(None)
+        except Exception:
+            pass
+    return env
+
+
+def start_qa_window(python, script):
+    """Start the QA script in its own Command Prompt window, which stays open when
+    the script ends or fails, so its output and any error can be read."""
+    cmdline = subprocess.list2cmdline(python + [script])
+    title = "DOE QA - %s" % os.path.basename(script)
+    return subprocess.Popen('cmd /s /k "title %s & %s"' % (title, cmdline), cwd=os.path.dirname(script),
+                            env=clean_child_environment(),
+                            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+
+
 def run_qa_script(checked_name=None):
     script = find_qa_script()
     if not script:
