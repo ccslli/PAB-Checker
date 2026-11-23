@@ -938,6 +938,18 @@ class ScanVlanDialog(QDialog):
         file_row.addWidget(self.btn_run)
         lay.addLayout(file_row)
 
+        design_row = QHBoxLayout()
+        lab = QLabel("Design file")
+        lab.setObjectName("fieldLabel")
+        self.design = QLineEdit(self.settings.value("scan_vlans/design", "") or "")
+        self.design.setPlaceholderText("Optional - its Drop List Draft is checked against the scan")
+        browse2 = QPushButton("Browse...")
+        browse2.clicked.connect(self.browse_design)
+        design_row.addWidget(lab)
+        design_row.addWidget(self.design, 1)
+        design_row.addWidget(browse2)
+        lay.addLayout(design_row)
+
         self.view = QTextBrowser()
         self.view.setOpenLinks(False)
         self.view.document().setDocumentMargin(14)
@@ -982,6 +994,14 @@ class ScanVlanDialog(QDialog):
             self.path.setText(os.path.normpath(path))
             self.settings.setValue("scan_vlans/folder", os.path.dirname(path))
 
+    def browse_design(self):
+        start = self.design.text().strip() or self.settings.value("scan_vlans/design_folder", "") or ""
+        path, _ = QFileDialog.getOpenFileName(self, "Select the design file", start,
+                                              "Excel files (*.xlsm *.xlsx);;All files (*.*)")
+        if path:
+            self.design.setText(os.path.normpath(path))
+            self.settings.setValue("scan_vlans/design_folder", os.path.dirname(path))
+
     def run(self):
         notes = self.notes()
         self.refresh_notes()
@@ -992,7 +1012,12 @@ class ScanVlanDialog(QDialog):
         if not os.path.isfile(path):
             QMessageBox.warning(self, "Site Scan VLANs", "Can't find the scan file:\n%s" % (path or "(none)"))
             return
+        design = self.design.text().strip().strip('"')
+        if design and not os.path.isfile(design):
+            QMessageBox.warning(self, "Site Scan VLANs", "Can't find the design file:\n%s" % design)
+            return
         fmt = self.fmt()
+        self.settings.setValue("scan_vlans/design", design)
         self.settings.setValue("scan_vlans/file", path)
         self.settings.setValue("scan_vlans/format", fmt)
         QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
@@ -1003,10 +1028,18 @@ class ScanVlanDialog(QDialog):
             QApplication.restoreOverrideCursor()
             QMessageBox.critical(self, "Site Scan VLANs", "The scan file couldn't be read.\n\n%s" % exc)
             return
+        dld = None
+        if design:
+            try:
+                rows, source = self.svc.read_design(design)
+                index = self.svc.design_index(rows)
+                dld = (design, source, len(index), self.svc.check_design(ports, index))
+            except Exception as exc:
+                dld = (design, None, 0, [("ERROR", "The design file couldn't be read: %s" % exc, None)])
         QApplication.restoreOverrideCursor()
-        self.show_results(path, fmt, info, groups, other)
+        self.show_results(path, fmt, info, groups, other, dld)
 
-    def show_results(self, path, fmt, info, groups, other):
+    def show_results(self, path, fmt, info, groups, other, dld=None):
         svc, row = self.svc, CheckerWindow._row
         html_parts, text = [], []
 
@@ -1046,6 +1079,17 @@ class ScanVlanDialog(QDialog):
             line("WARN", "VLAN %s: %d active port(s) - not one of the expected VLANs." % (v, len(ps)))
             for p in ps:
                 line("NOTE", "    %s" % svc.port_text(p))
+
+        if dld:
+            dpath, source, n, issues = dld
+            head("Drop List Draft - %s" % os.path.basename(dpath))
+            if source:
+                line("NOTE", "Read from %s; %d existing switch / port(s) in columns A / B." % (source, n))
+            if not issues:
+                line("OK", "Every active port on the special VLANs is in Drop List Draft, patched (P), "
+                           "with a new switch / port, the same VLAN and the same description.")
+            for level, msg, _ in issues:
+                line(level, msg)
 
         self.view.setHtml('<div style="font-family:\'Segoe UI\', sans-serif; font-size:10pt">%s</div>'
                           % "".join(html_parts))
