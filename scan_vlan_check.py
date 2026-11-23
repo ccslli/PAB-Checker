@@ -125,7 +125,8 @@ def norm_vlan(v):
 
 
 def read_scan(path, fmt):
-    """-> (active ports [dict], info lines).  Each port: host, interface, status, vlan, row."""
+    """-> (active ports [dict], info lines, every port [dict]).
+    Each port: host, interface, status, active, vlan, row, x, port, description ..."""
     rows = read_rows(path)
     found = find_header(rows)
     info = []
@@ -150,7 +151,7 @@ def read_scan(path, fmt):
         c = cols.get(key)
         return row[c - 1] if c and c - 1 < len(row) else None
 
-    ports, seen, total = [], set(), 0
+    every, seen, total = [], set(), 0
     for i, row in enumerate(rows[hdr_i + 1:], start=hdr_i + 2):
         host, intf = _text(cell(row, "hostname")), _text(cell(row, "interface"))
         if not intf or SKIP_INTERFACE_RE.match(intf):
@@ -160,18 +161,18 @@ def read_scan(path, fmt):
             continue
         seen.add((host, intf))
         status = _text(cell(row, "status"))
-        if not ACTIVE_RE.search(status) or re.search(r"\bdown\b", status, re.I):
-            continue
+        active = bool(ACTIVE_RE.search(status)) and not re.search(r"\bdown\b", status, re.I)
         x, port = scan_x_port(host, intf, _text(cell(row, "x")), _text(cell(row, "trace")))
-        ports.append({"host": host, "interface": intf, "status": status, "row": i,
+        every.append({"host": host, "interface": intf, "status": status, "row": i, "active": active,
                       "vlan": norm_vlan(cell(row, "vlan")), "vlan_raw": _text(cell(row, "vlan")),
                       "description": _text(cell(row, "description")), "x": x, "port": port,
                       "macs": {norm_description(m) for m in re.split(r"[,;\s]+", _text(cell(row, "macs")))
                                if re.fullmatch(r"[0-9a-f]{12}", norm_description(m))},
                       "neighbors": [n.strip() for key in ("cdp", "lldp")
                                     for n in re.split(r"[,;\n]+", _text(cell(row, key))) if n.strip()]})
+    ports = [p for p in every if p["active"]]
     info.append("%d interfaces read, %d active." % (total, len(ports)))
-    return ports, info
+    return ports, info, every
 
 
 def scan_x_port(host, interface, x_cell="", trace=""):
@@ -390,13 +391,54 @@ def notes_ports(notes, sections):
     return out
 
 
+def scan_lookup(every):
+    """{(X#, port): scan port} - active ports win over a down one on the same X# / port."""
+    out = {}
+    for p in every:
+        if p["x"] is None or p["port"] is None:
+            continue
+        key = (p["x"], p["port"])
+        if key not in out or (p["active"] and not out[key]["active"]):
+            out[key] = p
+    return out
+
+
+def notes_key(e):
+    """(X#, port) of a Notes row's existing (Old) switch / port, or None."""
+    where = e.get("old_raw") if e.get("old_raw") is not None else e.get("raw")
+    if core.norm(where) in core.NOTES_SKIP_VALUES:
+        return None
+    sp = core.parse_switch_port(where)
+    return (sp["x"], sp["port"]) if sp["x"] is not None and sp["port"] is not None else None
+
+
+def notes_status(e, lookup, vlans):
+    """How a Notes row's existing switch / port looks in the scan, e.g.
+    'matches scan', 'matches scan but down', 'in scan on VLAN 20', 'not in scan'."""
+    where = e.get("old_raw") if e.get("old_raw") is not None else e.get("raw")
+    if core.norm(where) in core.NOTES_SKIP_VALUES:
+        return "no existing switch / port in Notes"
+    key = notes_key(e)
+    if key is None:
+        return "switch / port can't be read"
+    p = lookup.get(key)
+    if p is None:
+        return "not in scan"
+    state = "" if p["active"] else " but down"
+    if p["vlan"] in vlans:
+        return "matches scan%s" % state
+    return "in scan on VLAN %s%s" % (p["vlan_raw"] or "blank", state)
+
+
 # =============================================================================
 # The check
 # =============================================================================
 
-def check(ports, notes):
+def check(ports, notes, every=None):
     """-> (group results, other VLAN ports)
-    group result: dict(vlans, name, scan=[ports], notes=[entries], ok)"""
+    group result: dict(vlans, name, scan=[ports], notes=[entries], ok,
+                       notes_total=[(entry, how it looks in the scan)], scan_in_notes={id: bool})"""
+    lookup = scan_lookup(every if every is not None else ports)
     groups = []
     special = set()
     for vlans, name, sections in VLAN_GROUPS:
@@ -407,8 +449,11 @@ def check(ports, notes):
         total = [e for e in notes.get("entries", []) if e["section"] in sections
                  and not (core.norm(e.get("old_raw")) in core.NOTES_SKIP_VALUES
                           and core.norm(e.get("raw")) in core.NOTES_SKIP_VALUES)]
+        keys = {notes_key(e) for e in total}
         groups.append({"vlans": vlans, "name": name, "sections": sections, "scan": scan,
-                       "notes": listed, "notes_total": total, "ok": len(scan) == len(listed)})
+                       "notes": listed, "ok": len(scan) == len(listed),
+                       "notes_total": [(e, notes_status(e, lookup, vlans)) for e in total],
+                       "scan_in_notes": {id(p): (p["x"], p["port"]) in keys for p in scan}})
     other = OrderedDict()
     for p in ports:
         v = p["vlan"]

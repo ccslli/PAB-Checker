@@ -1022,8 +1022,8 @@ class ScanVlanDialog(QDialog):
         self.settings.setValue("scan_vlans/format", fmt)
         QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
         try:
-            ports, info = self.svc.read_scan(path, fmt)
-            groups, other = self.svc.check(ports, notes)
+            ports, info, every = self.svc.read_scan(path, fmt)
+            groups, other = self.svc.check(ports, notes, every)
         except Exception as exc:
             QApplication.restoreOverrideCursor()
             QMessageBox.critical(self, "QA Check", "The scan file couldn't be read.\n\n%s" % exc)
@@ -1061,19 +1061,20 @@ class ScanVlanDialog(QDialog):
         head("Special VLANs vs Notes")
         for g in groups:
             lab = "%s (%s)" % (svc.vlan_label(g["vlans"]), g["name"])
-            total = len(g.get("notes_total", g["notes"]))
+            total = len(g["notes_total"])
             tot = "%d %s row(s) in Notes in total" % (total, g["name"])
             if g["ok"]:
                 line("OK", "%s: %d active in the scan = %d in Notes (%s)."
                      % (lab, len(g["scan"]), len(g["notes"]), tot))
-                continue
-            line("ERROR", "%s: %d active in the scan, but Notes (%s) lists %d existing port(s) - %s."
-                 % (lab, len(g["scan"]), " + ".join(g["sections"]), len(g["notes"]), tot))
+            else:
+                line("ERROR", "%s: %d active in the scan, but Notes (%s) lists %d existing port(s) - %s."
+                     % (lab, len(g["scan"]), " + ".join(g["sections"]), len(g["notes"]), tot))
             for p in g["scan"]:
-                line("NOTE", "    scan:  %s  (VLAN %s)" % (svc.port_text(p), p["vlan_raw"]))
-            for e in g["notes"]:
-                line("NOTE", "    Notes: %s / %s  -  %s" % (e["section"], e["component"],
-                                                          e.get("old_raw") or e.get("raw") or ""))
+                if not g["scan_in_notes"][id(p)]:
+                    line("NOTE", "    scan:  %s  (VLAN %s) - not in Notes" % (svc.port_text(p), p["vlan_raw"]))
+            for e, how in g["notes_total"]:
+                line("NOTE", "    Notes: %s / %s - %s - %s" % (e["section"], e["component"],
+                                                          e.get("old_raw") or e.get("raw") or "", how))
 
         head("Other active VLANs")
         if not other:
