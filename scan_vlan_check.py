@@ -534,5 +534,4 @@ def vlan_label(vlans):
 
 
 def port_text(p):
-    x = core.host_x(p["host"]) if p["host"] else None
-    return "%s %s%s" % (p["host"] or "(no hostname)", p["interface"], "  (X%d)" % x if x is not None else "")
+    return "%s %s" % (p["host"] or "(no hostname)", p["interface"])
