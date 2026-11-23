@@ -1061,11 +1061,14 @@ class ScanVlanDialog(QDialog):
         head("Special VLANs vs Notes")
         for g in groups:
             lab = "%s (%s)" % (svc.vlan_label(g["vlans"]), g["name"])
+            total = len(g.get("notes_total", g["notes"]))
+            tot = "%d %s row(s) in Notes in total" % (total, g["name"])
             if g["ok"]:
-                line("OK", "%s: %d active in the scan = %d in Notes." % (lab, len(g["scan"]), len(g["notes"])))
+                line("OK", "%s: %d active in the scan = %d in Notes (%s)."
+                     % (lab, len(g["scan"]), len(g["notes"]), tot))
                 continue
-            line("ERROR", "%s: %d active in the scan, but Notes (%s) lists %d."
-                 % (lab, len(g["scan"]), " + ".join(g["sections"]), len(g["notes"])))
+            line("ERROR", "%s: %d active in the scan, but Notes (%s) lists %d existing port(s) - %s."
+                 % (lab, len(g["scan"]), " + ".join(g["sections"]), len(g["notes"]), tot))
             for p in g["scan"]:
                 line("NOTE", "    scan:  %s  (VLAN %s)" % (svc.port_text(p), p["vlan_raw"]))
             for e in g["notes"]:

@@ -403,8 +403,12 @@ def check(ports, notes):
         special |= set(vlans)
         scan = [p for p in ports if p["vlan"] in vlans]
         listed = notes_ports(notes, sections)
+        # every row of these sections in Notes (old and new), for the totals shown
+        total = [e for e in notes.get("entries", []) if e["section"] in sections
+                 and not (core.norm(e.get("old_raw")) in core.NOTES_SKIP_VALUES
+                          and core.norm(e.get("raw")) in core.NOTES_SKIP_VALUES)]
         groups.append({"vlans": vlans, "name": name, "sections": sections, "scan": scan,
-                       "notes": listed, "ok": len(scan) == len(listed)})
+                       "notes": listed, "notes_total": total, "ok": len(scan) == len(listed)})
     other = OrderedDict()
     for p in ports:
         v = p["vlan"]
