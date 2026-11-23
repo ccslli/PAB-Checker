@@ -1032,7 +1032,9 @@ class ScanVlanDialog(QDialog):
             try:
                 rows, source = self.svc.read_design(design)
                 index = self.svc.design_index(rows)
-                dld = (design, source, len(index), self.svc.check_design(ports, index))
+                last = max((d["row"] for v in index.values() for d in v), default=0)
+                dld = (design, "%s (%d rows read, last switch / port on row %d)" % (source, len(rows), last),
+                       len(index), self.svc.check_design(ports, index))
             except Exception as exc:
                 dld = (design, None, 0, [("ERROR", "The design file couldn't be read: %s" % exc, None)])
         groups, other = self.svc.check(ports, notes, every, index)

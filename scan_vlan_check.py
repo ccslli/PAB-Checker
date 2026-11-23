@@ -202,6 +202,7 @@ DLD_HEADER_ROW = 4                  # data starts on the row below
 DLD_COLS = {"x": "A", "port": "B", "new_x": "C", "new_port": "D", "vlan": "E", "jack": "F",
             "description": "J", "patched": "U"}
 DLD_PATCHED = "P"
+DLD_MAX_ROWS = 30000                # never read further down than this
 
 
 def _open_in_excel(path):
@@ -232,7 +233,16 @@ def read_design(path):
         ws = next((w for w in wb.Worksheets if core.norm(w.Name) == core.norm(DLD_SHEET)), None)
         if ws is None:
             raise ValueError("No '%s' tab in %s." % (DLD_SHEET, os.path.basename(path)))
+        # Excel's search for the last cell skips rows that are hidden (grouped / filtered
+        # sections such as the abandoned ports) on a protected tab, so the used
+        # area decides how far down to read
         last_r, last_c = core._last_cell(ws)
+        try:
+            ur = ws.UsedRange
+            last_r = max(last_r, min(ur.Row + ur.Rows.Count - 1, DLD_MAX_ROWS))
+            last_c = max(last_c, min(ur.Column + ur.Columns.Count - 1, 100))
+        except Exception:
+            pass
         last_c = max(last_c, core.col(DLD_COLS["patched"]))
         vals = ws.Range(ws.Cells(1, 1), ws.Cells(max(last_r, DLD_HEADER_ROW), last_c)).Value
         return [list(r) for r in vals], "the copy open in Excel"
