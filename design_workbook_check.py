@@ -1214,15 +1214,17 @@ def check_drop(notes, diagram, drop, rep):
                          dev, e["port"], ", ".join(str(r["row"]) for r in rows)))
         _check_safer_access_label(T, ref, e, dev, rows, rep, safer_sets)
         if _generic_label(e, rows):
-            generic.setdefault(e["section"], []).append((dev, e["port"], rows))
+            generic.setdefault(e["section"], []).append((dev, e["port"], rows, e))
     for section, ports in generic.items():
         rep.warn(T, "%d %s port(s) in Notes have only '%s' (or nothing) as their description in column %s - "
                     "please check these ports to make sure the descriptions are correct:\n%s"
                  % (len(ports), section, section, DROP_WIRELESS_COL, "\n".join(
-                     "          %s port %s (row %s): %s" % (dev, port, ", ".join(str(r["row"]) for r in rows),
-                                                          ", ".join("'%s'" % r["p"] if r["p"] else "blank"
-                                                                    for r in rows))
-                     for dev, port, rows in ports)))
+                     "          %s port %s (row %s): %s - Notes %s / %s, old switch / port: %s"
+                     % (dev, port, ", ".join(str(r["row"]) for r in rows),
+                        ", ".join("'%s'" % r["p"] if r["p"] else "blank" for r in rows),
+                        e["section"], e["component"] or "(no component)",
+                        e.get("old_raw") or "blank")
+                     for dev, port, rows, e in ports)))
 
 
 # =============================================================================
