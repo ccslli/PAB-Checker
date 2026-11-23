@@ -286,6 +286,11 @@ def norm_description(t):
 DESIGN_SKIP_X = {0, 1, 66}
 # VLANs that count as the same one (2 and 21 are now a shared VLAN)
 SAME_VLANS = [{2, 21}]
+# Dietician: a port on VLAN 2 / 21 today that the design moves to the POS VLAN is
+# entered in Drop List Draft with E = 430 and J = Dietician - not an issue.
+DIETICIAN_RE = re.compile(r"^\s*dieti[ct]ian", re.I)
+DIETICIAN_DESIGN_VLANS = {430, 411}
+DIETICIAN_SCAN_VLANS = {2, 21}
 # Column J text that means "no description given" (normal data ports)
 DLD_NO_DESCRIPTION = ["Non-Access Point"]
 # Scan descriptions that mark an AP port
@@ -336,6 +341,8 @@ def check_design(ports, index):
             or not isinstance(p["vlan"], int) and p["vlan"] != "trunk"
         desc_ok = lambda d: (not scan_texts or norm_description(d["description"]) in skip_desc
                              or norm_description(d["description"]) in scan_texts)
+        dietician = lambda d: (DIETICIAN_RE.match(d["description"]) and d["vlan"] in DIETICIAN_DESIGN_VLANS
+                               and p["vlan"] in DIETICIAN_SCAN_VLANS)
         has_new = lambda d: core.norm(d["new_x"]) not in ("", "0") and core.norm(d["new_port"]) not in ("", "0")
         # an A / B pair can be on several rows: check the one that is most complete
         d = max(rows, key=lambda d: (d["patched"].upper() == DLD_PATCHED, has_new(d), vlan_ok(d), desc_ok(d),
@@ -355,10 +362,10 @@ def check_design(ports, index):
             issues.append(("ERROR", "%s: no new switch / port in columns %s / %s (%s / %s)."
                            % (ref, DLD_COLS["new_x"], DLD_COLS["new_port"],
                               d["new_x"] or "blank", d["new_port"] or "blank"), p))
-        if not vlan_ok(d) and not (ap and d["vlan"] == 100 and p["vlan"] in AP_SCAN_VLANS):
+        if not vlan_ok(d) and not dietician(d) and not (ap and d["vlan"] == 100 and p["vlan"] in AP_SCAN_VLANS):
             issues.append(("ERROR", "%s: column %s (Existing VLAN) is %s, the scan has VLAN %s."
                            % (ref, DLD_COLS["vlan"], d["vlan_raw"] or "blank", p["vlan_raw"] or "blank"), p))
-        if not ap and not desc_ok(d):            # AP ports are verified separately
+        if not ap and not desc_ok(d) and not dietician(d):   # AP ports are verified separately
             scan_has = ["description '%s'" % p["description"]] if p["description"] else []
             if p["neighbors"]:
                 scan_has.append("neighbor %s" % ", ".join(p["neighbors"]))
