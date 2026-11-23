@@ -1086,8 +1086,8 @@ class ScanVlanDialog(QDialog):
             if source:
                 line("NOTE", "Read from %s; %d existing switch / port(s) in columns A / B." % (source, n))
             if not issues:
-                line("OK", "Every active port on the special VLANs is in Drop List Draft, patched (P), "
-                           "with a new switch / port, the same VLAN and the same description.")
+                line("OK", "Every connected port is in Drop List Draft with the same VLAN and description, "
+                           "and every non-AP port is patched (P) with a new switch / port.")
             for level, msg, _ in issues:
                 line(level, msg)
 

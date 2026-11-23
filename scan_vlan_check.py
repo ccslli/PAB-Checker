@@ -43,15 +43,19 @@ ALLOWED_TEXT = {"trunk"}                               # "-" in the older scans 
 # ---- Scan file columns ---------------------------------------------------------
 # Fixed columns (1-based) used only when the file has no matching header row.
 FORMATS = OrderedDict([
-    ("original", {"title": "Original", "hostname": 1, "interface": 2, "status": 3, "description": 4, "vlan": 5}),
-    ("new",      {"title": "New",      "hostname": 1, "interface": 3, "status": 4, "description": 5, "vlan": 6}),
+    ("original", {"title": "Original", "hostname": 1, "interface": 2, "status": 3, "description": 4, "vlan": 5,
+                  "cdp": 7}),
+    ("new",      {"title": "New",      "hostname": 1, "interface": 3, "status": 4, "description": 5, "vlan": 6,
+                  "cdp": 8, "lldp": 11}),
 ])
 HEADER_NAMES = {"hostname": ["hostname", "device", "switch"], "interface": ["interface", "port"],
                 "status": ["status"], "vlan": ["vlan"], "description": ["description"],
                 "x": ["x"], "trace": ["porttracing"],          # norm('X#') = 'x'
-                "macs": ["macs", "mac", "macaddress", "macaddresses"]}
+                "macs": ["macs", "mac", "macaddress", "macaddresses"],
+                "cdp": ["cdpneighbor"], "lldp": ["lldpneighbor"]}
 COLUMN_NAMES = {"hostname": "Hostname", "interface": "Interface", "status": "Status", "vlan": "VLAN",
-                "description": "Description", "x": "X#", "trace": "Port Tracing", "macs": "MACs"}
+                "description": "Description", "x": "X#", "trace": "Port Tracing", "macs": "MACs",
+                "cdp": "CDP Neighbor", "lldp": "LLDP Neighbor"}
 HEADER_SEARCH_ROWS = 10
 
 ACTIVE_RE = re.compile(r"\b(?:up|connected)\b", re.I)          # 'notconnect' doesn't match
@@ -130,6 +134,10 @@ def read_scan(path, fmt):
         fixed = FORMATS[fmt]
         for key in ("hostname", "interface", "description"):
             cols.setdefault(key, fixed[key])
+        if "cdp" not in cols and "lldp" not in cols:
+            for key in ("cdp", "lldp"):
+                if key in fixed:
+                    cols[key] = fixed[key]
         info.append("Columns found by their headers: %s." % ", ".join(
             "%s %s" % (COLUMN_NAMES.get(k, k), core.col_letter(c)) for k, c in cols.items()))
     else:
@@ -159,7 +167,9 @@ def read_scan(path, fmt):
                       "vlan": norm_vlan(cell(row, "vlan")), "vlan_raw": _text(cell(row, "vlan")),
                       "description": _text(cell(row, "description")), "x": x, "port": port,
                       "macs": {norm_description(m) for m in re.split(r"[,;\s]+", _text(cell(row, "macs")))
-                               if re.fullmatch(r"[0-9a-f]{12}", norm_description(m))}})
+                               if re.fullmatch(r"[0-9a-f]{12}", norm_description(m))},
+                      "neighbors": [n.strip() for key in ("cdp", "lldp")
+                                    for n in re.split(r"[,;\n]+", _text(cell(row, key))) if n.strip()]})
     info.append("%d interfaces read, %d active." % (total, len(ports)))
     return ports, info
 
@@ -188,7 +198,7 @@ def scan_x_port(host, interface, x_cell="", trace=""):
 
 DLD_SHEET = "Drop List Draft"
 DLD_HEADER_ROW = 4                  # data starts on the row below
-DLD_COLS = {"x": "A", "port": "B", "new_x": "C", "new_port": "D", "vlan": "E",
+DLD_COLS = {"x": "A", "port": "B", "new_x": "C", "new_port": "D", "vlan": "E", "jack": "F",
             "description": "J", "patched": "U"}
 DLD_PATCHED = "P"
 
@@ -256,6 +266,7 @@ def design_index(rows):
             "row": r, "a": _text(a), "b": _text(cell(row, "port")),
             "new_x": _text(cell(row, "new_x")), "new_port": _text(cell(row, "new_port")),
             "vlan": norm_vlan(cell(row, "vlan")), "vlan_raw": _text(cell(row, "vlan")),
+            "jack": _text(cell(row, "jack")),
             "description": _text(cell(row, "description")), "patched": _text(cell(row, "patched")),
         })
     return index
@@ -270,59 +281,87 @@ def norm_description(t):
     return t
 
 
+# Switches whose ports aren't looked up in Drop List Draft (the core, as in PT Checker)
+DESIGN_SKIP_X = {1}
+# Column J text that means "no description given" (normal data ports)
+DLD_NO_DESCRIPTION = ["Non-Access Point"]
+AP_NAME_RE = re.compile(r"^\d{2}[A-Za-z]\d{3}_")             # RACKID_... without an X# = an AP name
+
+
+def is_switch_name(name):
+    return bool(core.HOST_RE.search(name or ""))
+
+
+def is_ap_name(name):
+    return bool(AP_NAME_RE.match(name or "")) and not is_switch_name(name)
+
+
 def check_design(ports, index):
-    """Every active scan port on a special VLAN must be in Drop List Draft A / B,
-    patched (U = P), with a new switch / port (C / D), the same existing VLAN (E)
-    and the same description (J; a MAC address there may match the scan's MACs
-    instead).  -> [(level, message, scan port)]"""
-    special = {v for vlans, _, _ in VLAN_GROUPS for v in vlans}
-    issues = []
+    """Every connected scan port must be in Drop List Draft A / B with the same
+    existing VLAN (E; trunk = 100) and description (J).  Non-AP ports must also
+    be patched (U = P) with a new switch / port (C / D); AP ports may have been
+    shifted, so those two aren't required for them (AP = an AP name in J, a jack
+    label in F ending -W1, or an AP as the port's CDP / LLDP neighbor).
+    Left out: links to other switches (a neighbor with an X#), module ports,
+    the switches in DESIGN_SKIP_X.  -> [(level, message, scan port)]"""
+    issues, no_x = [], OrderedDict()
+    skip_desc = {norm_description(t) for t in DLD_NO_DESCRIPTION}
     for p in ports:
-        if p["vlan"] not in special:
+        if p["x"] in DESIGN_SKIP_X or p["port"] is None:
             continue
-        where = "%s (%s %s, VLAN %s)" % ("X%s port %s" % (p["x"], p["port"]) if p["x"] is not None
-                                        and p["port"] is not None else p["interface"],
-                                        p["host"] or "(no hostname)", p["interface"], p["vlan_raw"])
-        if p["x"] is None or p["port"] is None:
-            issues.append(("WARN", "%s: no X# / port could be read, so it can't be looked up in %s."
-                           % (where, DLD_SHEET), p))
+        if any(is_switch_name(n) for n in p["neighbors"]):
+            continue                                       # switch-to-switch link
+        if p["x"] is None:
+            no_x[p["host"] or "(no hostname)"] = no_x.get(p["host"] or "(no hostname)", 0) + 1
             continue
+        where = "X%s port %s (%s %s, VLAN %s)" % (p["x"], p["port"], p["host"] or "(no hostname)",
+                                                  p["interface"], p["vlan_raw"] or "blank")
         rows = index.get((p["x"], p["port"]))
         if not rows:
-            issues.append(("ERROR", "%s is active in the scan but isn't in %s columns %s / %s."
+            issues.append(("ERROR", "%s is connected in the scan but isn't in %s columns %s / %s."
                            % (where, DLD_SHEET, DLD_COLS["x"], DLD_COLS["port"]), p))
             continue
+        scan_texts = {norm_description(p["description"])} | p["macs"] | \
+            {norm_description(n) for n in p["neighbors"]}
+        scan_texts.discard("")
+        vlan_ok = lambda d: d["vlan"] == p["vlan"] or (p["vlan"] == "trunk" and d["vlan"] in (100, "trunk")) \
+            or not isinstance(p["vlan"], int) and p["vlan"] != "trunk"
+        desc_ok = lambda d: (not scan_texts or norm_description(d["description"]) in skip_desc
+                             or norm_description(d["description"]) in scan_texts)
+        has_new = lambda d: core.norm(d["new_x"]) not in ("", "0") and core.norm(d["new_port"]) not in ("", "0")
         # an A / B pair can be on several rows: check the one that is most complete
-        mine_ok = lambda d: (norm_description(d["description"]) == norm_description(p["description"])
-                             or norm_description(d["description"]) in p["macs"])
-        d = max(rows, key=lambda d: (d["patched"].upper() == DLD_PATCHED,
-                                     core.norm(d["new_x"]) not in ("", "0") and core.norm(d["new_port"]) not in ("", "0"),
-                                     d["vlan"] == p["vlan"], mine_ok(d), -d["row"]))
+        d = max(rows, key=lambda d: (d["patched"].upper() == DLD_PATCHED, has_new(d), vlan_ok(d), desc_ok(d),
+                                     -d["row"]))
         also = [x["row"] for x in rows if x is not d]
         ref = "%s - %s row %d%s" % (where, DLD_SHEET, d["row"],
                                      " (also on row%s %s)" % ("s" if len(also) > 1 else "",
                                                                ", ".join(map(str, also))) if also else "")
-        if d["patched"].upper() != DLD_PATCHED:
+        # AP port: an AP name in J, a wireless jack (F ends -W1) or an AP as the scan's neighbor
+        ap = (is_ap_name(d["description"]) or re.search(r"-\s*W\d+\s*$", d["jack"], re.I)
+              or any(is_ap_name(n) for n in p["neighbors"]))
+        if not ap and d["patched"].upper() != DLD_PATCHED:
             issues.append(("ERROR", "%s: column %s is '%s', should be %s."
                            % (ref, DLD_COLS["patched"], d["patched"] or "blank", DLD_PATCHED), p))
-        if core.norm(d["new_x"]) in ("", "0") or core.norm(d["new_port"]) in ("", "0"):
+        if not ap and not has_new(d):
             issues.append(("ERROR", "%s: no new switch / port in columns %s / %s (%s / %s)."
                            % (ref, DLD_COLS["new_x"], DLD_COLS["new_port"],
                               d["new_x"] or "blank", d["new_port"] or "blank"), p))
-        if d["vlan"] != p["vlan"]:
+        if not vlan_ok(d):
             issues.append(("ERROR", "%s: column %s (Existing VLAN) is %s, the scan has VLAN %s."
-                           % (ref, DLD_COLS["vlan"], d["vlan_raw"] or "blank", p["vlan_raw"]), p))
-        # J can hold the device's MAC address (cameras): it then matches the scan's MAC column
-        mine = norm_description(d["description"])
-        if (p["description"] or p["macs"]) and mine != norm_description(p["description"]) \
-                and mine not in p["macs"]:
+                           % (ref, DLD_COLS["vlan"], d["vlan_raw"] or "blank", p["vlan_raw"] or "blank"), p))
+        if not desc_ok(d):
             scan_has = ["description '%s'" % p["description"]] if p["description"] else []
+            if p["neighbors"]:
+                scan_has.append("neighbor %s" % ", ".join(p["neighbors"]))
             if p["macs"]:
                 scan_has.append("MAC %s" % ", ".join(":".join(m[i:i + 2] for i in range(0, 12, 2)).upper()
                                                        for m in sorted(p["macs"])))
             issues.append(("WARN", "%s: column %s is '%s', the scan has %s."
                            % (ref, DLD_COLS["description"], d["description"] or "blank",
                               " and ".join(scan_has)), p))
+    for host, n in no_x.items():
+        issues.append(("WARN", "%s: no X# could be read for its %d connected port(s), so they weren't looked up "
+                               "in %s." % (host, n, DLD_SHEET), None))
     return issues
 
 
