@@ -1023,12 +1023,11 @@ class ScanVlanDialog(QDialog):
         QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
         try:
             ports, info, every = self.svc.read_scan(path, fmt)
-            groups, other = self.svc.check(ports, notes, every)
         except Exception as exc:
             QApplication.restoreOverrideCursor()
             QMessageBox.critical(self, "QA Check", "The scan file couldn't be read.\n\n%s" % exc)
             return
-        dld = None
+        dld, index = None, None
         if design:
             try:
                 rows, source = self.svc.read_design(design)
@@ -1036,6 +1035,7 @@ class ScanVlanDialog(QDialog):
                 dld = (design, source, len(index), self.svc.check_design(ports, index))
             except Exception as exc:
                 dld = (design, None, 0, [("ERROR", "The design file couldn't be read: %s" % exc, None)])
+        groups, other = self.svc.check(ports, notes, every, index)
         QApplication.restoreOverrideCursor()
         self.show_results(path, fmt, info, groups, other, dld)
 

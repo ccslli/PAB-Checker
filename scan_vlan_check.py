@@ -433,6 +433,12 @@ def notes_ports(notes, sections):
     return out
 
 
+def not_a_drop(p):
+    """Uplink module ports, links to other switches and the X0 / X1 / X66 switches."""
+    return (p["port"] is None or p["x"] in DESIGN_SKIP_X
+            or any(is_switch_name(n) for n in p["neighbors"]))
+
+
 def scan_lookup(every):
     """{(X#, port): scan port} - active ports win over a down one on the same X# / port."""
     out = {}
@@ -476,7 +482,7 @@ def notes_status(e, lookup, vlans):
 # The check
 # =============================================================================
 
-def check(ports, notes, every=None):
+def check(ports, notes, every=None, index=None):
     """-> (group results, other VLAN ports)
     group result: dict(vlans, name, scan=[ports], notes=[entries], ok,
                        notes_total=[(entry, how it looks in the scan)], scan_in_notes={id: bool})"""
@@ -501,6 +507,11 @@ def check(ports, notes, every=None):
         v = p["vlan"]
         if v in special or v in ALLOWED_VLANS or v in ALLOWED_TEXT:
             continue
+        if v == "" and not_a_drop(p):
+            continue                 # uplinks / core / switch links: no VLAN shown, QA'd separately
+        if index and v in AP_SCAN_VLANS and p["x"] is not None and \
+                any(d["vlan"] == 100 for d in index.get((p["x"], p["port"]), [])):
+            continue                 # AP port: VLAN 100 in Drop List Draft
         other.setdefault(v if v != "" else "(blank)", []).append(p)
     return groups, other
 
