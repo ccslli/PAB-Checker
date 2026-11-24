@@ -64,7 +64,9 @@ splash = Splash(
     datas=a.datas,
     text_pos=(22, 226),
     text_size=9,
-    text_font="Segoe UI",
+    # Tcl needs braces around a font name with a space - without them the splash
+    # script stops at the font and leaves an empty "tk" window instead of the splash
+    text_font="{Segoe UI}",
     text_color="#9AA7B4",
     text_default="Starting PAB Checker...",
     minify_script=True,
