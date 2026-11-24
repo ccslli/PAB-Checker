@@ -24,6 +24,7 @@ the Python installed on the PC.
 import base64
 import html
 import os
+import re
 import subprocess
 import sys
 import time
@@ -730,7 +731,7 @@ class CheckerWindow(QMainWindow):
         return ('<table width="100%%" cellspacing="0" cellpadding="0" style="margin-bottom:5px">'
                 '<tr><td width="3" bgcolor="%s"></td><td width="10"></td>'
                 '<td style="color:%s; padding-top:2px; padding-bottom:2px">%s%s</td></tr></table>'
-                % (bar, text_color, lead, esc(msg)))
+                % (bar, text_color, lead, re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc(msg))))
 
     def open_special_tools(self):
         if not self.special:

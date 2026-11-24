@@ -515,6 +515,11 @@ class Report:
         self.footer = []         # (title, [lines]) printed after every tab
 
     @staticmethod
+    def plain(msg):
+        """Message without the **bold** markers (terminal, copied text)."""
+        return msg.replace("**", "")
+
+    @staticmethod
     def _tidy(msg):
         # a message ending in a question ('did you mean X?') gets no extra full stop
         return re.sub(r"([?!])\.(\s*)$", r"\1\2", msg)
@@ -547,7 +552,7 @@ class Report:
         tags = {"ERROR": "[ERROR] ", "WARN": "[WARN ] ", "NOTE": ""}
         for tab, items in self.sections(tab_order):
             lines += ["", "=" * 78, tab, "=" * 78]
-            lines += [tags[lv] + msg for lv, msg in items]
+            lines += [tags[lv] + self.plain(msg) for lv, msg in items]
             if not any(lv in ("ERROR", "WARN") for lv, _ in items):
                 lines.append("No issues found in %s." % tab)
         for title, body in self.footer:
@@ -1324,8 +1329,25 @@ def check_wired(g, notes, diagram, drop, rep):
             x["loc"], x["loose"] = map_room_loose(x["room"], locs)
         x["qty"] = qty(x["d"], x["e"])
 
+    def closet_of(x):
+        """Notes location named in column G (e.g. 'IDF 4' -> IDF4), or None."""
+        return next((n for n in locs if norm(n) == norm(x["closet"])), None) if x["closet"] else None
+
     def de(x):
-        return "row %d: D=%s, E=%s" % (x["row"], clean(x["d"]) or "blank", clean(x["e"]) or "blank")
+        out = "row %d: D=%s, E=%s" % (x["row"], clean(x["d"]) or "blank", clean(x["e"]) or "blank")
+        g = closet_of(x)
+        if g and x["loc"] and g != x["loc"]:
+            # the room in H belongs to another closet than the one this row sits under
+            out += " - under %s in column %s, but room %s in column %s is %s's room" % (
+                x["closet"], WIRED_CLOSET_COL, x["room"], WIRED_ROOM_COL, x["loc"])
+        return out
+
+    def misplaced(kinds, name):
+        """Lines of these kinds under closet `name` in column G whose room (H) points elsewhere."""
+        bad = [x for x in rows if x["kind"] in kinds and closet_of(x) == name and x["loc"] != name and x["qty"]]
+        return "".join(" - row %d is under %s in column %s but has room %s in column %s (%s's room)"
+                       % (x["row"], x["closet"], WIRED_CLOSET_COL, x["room"] or "blank", WIRED_ROOM_COL,
+                          x["loc"] or "no closet") for x in bad)
 
     def pick(kind, loc=None, pool=None):
         return [x for x in (pool if pool is not None else rows)
@@ -1402,26 +1424,26 @@ def check_wired(g, notes, diagram, drop, rep):
         got_rows = pick("pdu", name)
         got = sum(x["qty"] for x in got_rows)
         if not got_rows:
-            rep.error(T, "%s: no line found for %s (expected %d for %d access switches)%s."
-                      % (PDU, name, exp, n_acc, no_room(("pdu",), name)))
+            rep.error(T, "%s: no line found for %s (expected **%d** for %d access switches)%s%s."
+                      % (PDU, name, exp, n_acc, misplaced(("pdu",), name), no_room(("pdu",), name)))
         elif got != exp:
-            rep.error(T, "%s in %s: expected %d (%d access switches), found %s (%s)%s."
+            rep.error(T, "%s in %s: expected **%d** (%d access switches), found **%s** (%s)%s."
                       % (PDU, name, exp, n_acc, got, "; ".join(de(x) for x in got_rows),
                          no_room(("pdu",))))
     if not rooms_ok:
         got = sum(x["qty"] for x in pick("pdu"))
         if got != exp_total:
-            rep.error(T, "%s total: expected %d across MDF/IDFs, found %s." % (PDU, exp_total, got))
+            rep.error(T, "%s total: expected **%d** across MDF/IDFs, found **%s**." % (PDU, exp_total, got))
 
     # ---- C9300X-48HXN-M (main line + X0 line) ---------------------------
     sw_rows = pick("c9300x") + pick("c9300x_x0")
     got_total = sum(x["qty"] for x in sw_rows)
     if got_total == total_model:
-        rep.note(T, "C9300X-48HXN-M total (all lines incl. X0) = %d, matching the %s switches in Notes."
+        rep.note(T, "C9300X-48HXN-M total (all lines incl. X0) = **%d**, matching the %s switches in Notes."
                  % (got_total, ACCESS_MODEL))
     else:
-        rep.error(T, "C9300X-48HXN-M total (all lines incl. X0): expected %d %s switches from Notes, "
-                     "found %s (%s)." % (total_model, ACCESS_MODEL, got_total,
+        rep.error(T, "C9300X-48HXN-M total (all lines incl. X0): expected **%d** %s switches from Notes, "
+                     "found **%s** (%s)." % (total_model, ACCESS_MODEL, got_total,
                                          "; ".join(de(x) for x in sw_rows if x["qty"]) or "nothing entered"))
     if rooms_ok:
         for name, L in locs.items():
@@ -1429,13 +1451,14 @@ def check_wired(g, notes, diagram, drop, rep):
             lr = [x for x in sw_rows if x["loc"] == name]
             got = sum(x["qty"] for x in lr)
             if got != exp:
-                rep.error(T, "C9300X-48HXN-M in %s: expected %d, found %s (%s)%s."
+                rep.error(T, "C9300X-48HXN-M in %s: expected **%d**, found **%s** (%s)%s%s."
                           % (name, exp, got, "; ".join(de(x) for x in lr) or "no line",
+                             misplaced(("c9300x", "c9300x_x0"), name),
                              no_room(("c9300x", "c9300x_x0"), name if not lr else None)))
     diag_model = sum(1 for h, lst in diagram["hosts"].items() if lst[0]["model"].startswith(ACCESS_MODEL))
     notes_model_all = sum(1 for s in all_new if s["model"].startswith(ACCESS_MODEL))
     if diagram["hosts"] and diag_model != notes_model_all:
-        rep.error(T, "%s hostnames: Notes has %d, Network_Diagram has %d."
+        rep.error(T, "%s hostnames: Notes has **%d**, Network_Diagram has **%d**."
                   % (ACCESS_MODEL, notes_model_all, diag_model))
 
     x0_rows = pick("c9300x_x0", pool=mdf_rows)
@@ -1444,7 +1467,7 @@ def check_wired(g, notes, diagram, drop, rep):
     else:
         got = sum(x["qty"] for x in x0_rows)
         if got != mdf_model:
-            rep.error(T, "C9300X-48HXN-M - X0 line: expected %d (%s switches in the MDF), found %s (%s)."
+            rep.error(T, "C9300X-48HXN-M - X0 line: expected **%d** (%s switches in the MDF), found **%s** (%s)."
                       % (mdf_model, ACCESS_MODEL, got, "; ".join(de(x) for x in x0_rows)))
 
     # ---- Firewalls: exactly one line with 1 in column E ------------------
@@ -1501,7 +1524,7 @@ def check_wired(g, notes, diagram, drop, rep):
         else:
             rep.note(T, "X1 and X1+ needed (%s)" % why)
     elif x1p_blank:
-        rep.note(T, "Only 1 X1 needed (%d access switches detected)" % total_access)
+        rep.note(T, "Only 1 X1 needed (**%d** access switches detected)" % total_access)
     else:
         rep.error(T, "C9500-48Y4C-EDU X1+ should be blank - only 1 X1 core in the design, "
                      "%d access switches detected (%s)." % (total_access, "; ".join(de(x) for x in x1p)))
@@ -1514,7 +1537,7 @@ def check_wired(g, notes, diagram, drop, rep):
     else:
         got = sum(x["qty"] for x in sfp)
         if got != exp:
-            rep.error(T, "SFP-10/25G-CSR-S=: expected %d (%d x 2 + 8%s), found %s (%s)."
+            rep.error(T, "SFP-10/25G-CSR-S=: expected **%d** (%d x 2 + 8%s), found **%s** (%s)."
                       % (exp, sfp_model, " + 8" if fpr3130 else "",
                          got, "; ".join(de(x) for x in sfp)))
 
@@ -1699,15 +1722,15 @@ def check_wireless_equipment(g, wdata, rep):
         vals = [num(v) for v in (d, e) if num(v) is not None]
         okay = all(v == exp for v in vals) and (bool(vals) or exp == 0)
         if not okay:
-            rep.error(T, "%s '%s' (row %d): Wireless_Design_Data has %d x '%s'; D=%s, E=%s."
+            rep.error(T, "%s '%s' (row %d): Wireless_Design_Data has **%d** x '%s'; D=**%s**, E=**%s**."
                       % (model, desc, r, exp, design, clean(d) or "blank", clean(e) or "blank"))
     for idx, (prefix, must, design) in enumerate(WIRELESS_MAP):
         if design and idx not in seen_lines and counts.get(norm(design), 0):
-            rep.error(T, "Line %s%s not found on the sheet, but Wireless_Design_Data has %d x '%s'."
+            rep.error(T, "Line %s%s not found on the sheet, but Wireless_Design_Data has **%d** x '%s'."
                       % (prefix, " (%s)" % must if must else "", counts[norm(design)], design))
     for k, v in counts.items():
         if k not in used:
-            rep.warn(T, "AP model '%s' (%d in Wireless_Design_Data) has no matching equipment line."
+            rep.warn(T, "AP model '%s' (**%d** in Wireless_Design_Data) has no matching equipment line."
                      % (labels[k], v))
 
 
