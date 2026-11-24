@@ -144,11 +144,13 @@ WDATA_PORT_COL = "G"
 WDATA_X_COL = "H"
 WDATA_MODEL_COL = "L"
 WDATA_ADDRESS_COL = "R"          # address, row 5 down: must not be blank or an Excel error
-# Drop number: should end with "-W1" (the W1 label on the patch panel); anything
-# else is a warning to go and check.  The column is found by its header in row 4
-# (a title containing "Drop"); set a letter here to use a fixed column instead.
-WDATA_DROP_COL = None
-WDATA_DROP_SUFFIX = "-W1"
+# Faceplate ID and Patch Panel (e.g. G296B-D002-W1 / 244-D002-W1) should both end
+# with W1 (the W1 label; "-W1" or " W1"), and normally carry the same drop number
+# (D002).  Anything else is a warning to go and check.  The columns are found by
+# their row-4 headers; set a letter here to use a fixed column instead.
+WDATA_FACEPLATE_COL = None
+WDATA_PATCH_PANEL_COL = None
+WDATA_DROP_SUFFIX = "W1"
 WDATA_TAG_CELL = "P5"            # network tag: borough + 1 (odd rack ID) / 2 (even rack ID)
 WDATA_RACK_CELL = "A2"           # rack ID, e.g. 26Q216
 BOROUGHS = OrderedDict([("Q", "Queens"), ("B", "Brooklyn"), ("M", "Manhattan"),
@@ -1643,40 +1645,57 @@ def check_addresses(g, rep):
         rep.error(T, "%s %s (%s %s)." % (name, what, "row" if len(rows) == 1 else "rows", _row_ranges(rows)))
 
 
-def _wdata_drop_col(g):
-    """Column of the drop number: WDATA_DROP_COL, or the row-4 header with 'Drop' in it."""
-    if WDATA_DROP_COL:
-        return col(WDATA_DROP_COL)
-    hits = [(c, norm(t)) for c, t in g.row_cells(WDATA_HEADER_ROW) if "drop" in norm(t)]
-    best = [c for c, n in hits if re.search(r"drop(number|num|no|id)?$", n)] or [c for c, _ in hits]
-    return best[0] if best else None
+def _wdata_col(g, fixed, words):
+    """Column fixed in the configuration, or the row-4 header containing `words`."""
+    if fixed:
+        return col(fixed)
+    hit = [c for c, t in g.row_cells(WDATA_HEADER_ROW) if words in norm(t)]
+    return hit[0] if hit else None
+
+
+def _drop_id(label):
+    """'G296B-D002 W1' -> 'D002' (the drop number), or ''."""
+    m = re.search(r"(?<![A-Za-z0-9])(D\d+)(?![0-9])", label, re.I)
+    return m.group(1).upper() if m else ""
 
 
 def check_drop_numbers(g, rep):
-    """Every AP row's drop number should end with -W1 (warnings, grouped)."""
+    """Every AP row's Faceplate ID and Patch Panel should end with W1 and share
+    the same drop number (warnings, grouped)."""
     T = "Wireless_Design_Data"
-    dc = _wdata_drop_col(g)
-    if dc is None:
-        rep.warn(T, "No drop number column found (no header with 'Drop' in row %d), so the %s "
-                    "labels were not checked." % (WDATA_HEADER_ROW, WDATA_DROP_SUFFIX))
+    cols = [(c, g.text(WDATA_HEADER_ROW, c) or default) for c, default in (
+        (_wdata_col(g, WDATA_FACEPLATE_COL, "faceplate"), "Faceplate ID"),
+        (_wdata_col(g, WDATA_PATCH_PANEL_COL, "patchpanel"), "Patch Panel")) if c]
+    if not cols:
+        rep.warn(T, "No 'Faceplate ID' or 'Patch Panel' header found in row %d, so the %s labels were "
+                    "not checked." % (WDATA_HEADER_ROW, WDATA_DROP_SUFFIX))
         return
-    name = g.text(WDATA_HEADER_ROW, dc) or "Drop number"
-    blank, wrong = [], []
+    suffix = re.compile(r"[\s\-_]%s$" % re.escape(WDATA_DROP_SUFFIX), re.I)
+    wrong, blank, differ = OrderedDict(), OrderedDict(), []
     for r in range(WDATA_FIRST_ROW, g.nrows + 1):
         if not any(g.text(r, col(c)) for c in (WDATA_MODEL_COL, WDATA_PORT_COL, WDATA_X_COL)):
             continue                                    # not an AP row
-        v = g.text(r, dc)
-        if not v:
-            blank.append(r)
-        elif not v.replace(" ", "").upper().endswith(WDATA_DROP_SUFFIX.upper()):
-            wrong.append((r, v))
-    if wrong:
-        rep.warn(T, "%s does not end with '%s' on %d row(s) - check whether the patch panel is missing "
-                    "the %s label:\n%s"
-                 % (name, WDATA_DROP_SUFFIX, len(wrong), WDATA_DROP_SUFFIX.lstrip("-"),
-                    "\n".join("          row %d: %s" % (r, v) for r, v in wrong)))
-    if blank:
-        rep.warn(T, "%s is blank (%s %s)." % (name, "row" if len(blank) == 1 else "rows", _row_ranges(blank)))
+        vals = []
+        for c, name in cols:
+            v = g.text(r, c)
+            vals.append(v)
+            if not v:
+                blank.setdefault(name, []).append(r)
+            elif not suffix.search(v):
+                wrong.setdefault(name, []).append((r, v))
+        if len(vals) == 2 and all(vals) and _drop_id(vals[0]) and _drop_id(vals[1]) \
+                and _drop_id(vals[0]) != _drop_id(vals[1]):
+            differ.append((r, vals[0], vals[1]))
+    for name, items in wrong.items():
+        rep.warn(T, "%s does not end with %s on %d row(s) - check whether the %s label is missing:\n%s"
+                 % (name, WDATA_DROP_SUFFIX, len(items), WDATA_DROP_SUFFIX,
+                                       "\n".join("          row %d: %s" % (r, v) for r, v in items)))
+    if differ:
+        rep.warn(T, "%s and %s have different drop numbers on %d row(s):\n%s"
+                 % (cols[0][1], cols[1][1], len(differ),
+                    "\n".join("          row %d: %s / %s" % d for d in differ)))
+    for name, rows in blank.items():
+        rep.warn(T, "%s is blank (%s %s)." % (name, "row" if len(rows) == 1 else "rows", _row_ranges(rows)))
 
 
 def check_network_tags(g, rep):
