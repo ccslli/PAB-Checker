@@ -1444,18 +1444,29 @@ def check_wired(g, notes, diagram, drop, rep):
         rep.note(T, "C9300X-48HXN-M total (all lines incl. X0) = **%d**, matching the %s switches in Notes."
                  % (got_total, ACCESS_MODEL))
     else:
+        not_model = Counter(s_["model"] or "unknown model" for s_ in all_new
+                            if is_access(s_) and not is_new_access_model(s_))
+        why = (" - Notes also has %s access switch(es) whose hostname isn't %s: %s"
+               % (sum(not_model.values()), ACCESS_MODEL,
+                  ", ".join("(%d) %s" % (n, m) for m, n in not_model.most_common()))) if not_model else ""
         rep.error(T, "C9300X-48HXN-M total (all lines incl. X0): expected **%d** %s switches from Notes, "
-                     "found **%s** (%s)." % (total_model, ACCESS_MODEL, got_total,
-                                         "; ".join(de(x) for x in sw_rows if x["qty"]) or "nothing entered"))
+                     "found **%s** (%s)%s." % (total_model, ACCESS_MODEL, got_total,
+                                           "; ".join(de(x) for x in sw_rows if x["qty"]) or "nothing entered", why))
     if rooms_ok:
         for name, L in locs.items():
             exp = sum(1 for s in L["switches"] if is_new_access_model(s))
             lr = [x for x in sw_rows if x["loc"] == name]
             got = sum(x["qty"] for x in lr)
             if got != exp:
-                rep.error(T, "C9300X-48HXN-M in %s: expected **%d**, found **%s** (%s)%s%s."
-                          % (name, exp, got, "; ".join(de(x) for x in lr) or "no line",
-                             misplaced(("c9300x", "c9300x_x0"), name),
+                # Notes switches in this closet whose hostname isn't C9300X - the usual
+                # reason the expected number is lower than the sheet
+                others = [s_ for s_ in L["switches"] if not is_new_access_model(s_)]
+                why = (" - Notes lists %d new switch(es) in %s, %d with %s in the hostname; the others are %s"
+                       % (len(L["switches"]), name, exp, ACCESS_MODEL, model_breakdown(others))) if others else ""
+                rep.error(T, "C9300X-48HXN-M in %s: expected **%d**, found **%s** (%s)%s%s%s."
+                          % (name, exp, got, "; ".join(de(x) for x in lr if x["qty"]) or
+                             ("; ".join(de(x) for x in lr) or "no line"),
+                             why, misplaced(("c9300x", "c9300x_x0"), name),
                              no_room(("c9300x", "c9300x_x0"), name if not lr else None)))
     diag_model = sum(1 for h, lst in diagram["hosts"].items() if lst[0]["model"].startswith(ACCESS_MODEL))
     notes_model_all = sum(1 for s in all_new if s["model"].startswith(ACCESS_MODEL))
