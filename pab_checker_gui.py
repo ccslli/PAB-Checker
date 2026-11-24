@@ -31,6 +31,19 @@ import time
 import traceback
 from datetime import datetime
 
+
+def splash_progress(pct, text=""):
+    """Move the .exe's start-up splash bar to pct% (see branding/splash_progress.tcl;
+    the splash always reads "Loading...").  Does nothing when run as a plain .py."""
+    try:
+        import pyi_splash
+        pyi_splash.update_text("%d%%|%s" % (pct, text))
+    except Exception:
+        pass
+
+
+# Unpacking the .exe takes the bar to 90%; the slow imports below are the rest.
+splash_progress(92, "Qt")
 from PySide6.QtCore import QRectF, QSettings, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import (QBrush, QColor, QCursor, QGuiApplication, QIcon, QKeySequence,
                            QPainter, QPalette, QPen, QPixmap, QRadialGradient, QShortcut)
@@ -39,7 +52,8 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox,
                                QRadioButton, QSizePolicy, QSplitter, QTextBrowser, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
-import design_workbook_check as core
+splash_progress(96, "Excel")
+import design_workbook_check as core                                  # noqa: E402  (xlwings / pywin32)
 
 try:                                    # the DT icon embedded as data (branding/dt_icon_data.py)
     from branding.dt_icon_data import PNGS as EMBEDDED_ICON
@@ -1154,15 +1168,6 @@ def load_icon(app):
     return False
 
 
-def splash_text(text):
-    """Update the start-up splash of a PyInstaller .exe (no-op when run as .py)."""
-    try:
-        import pyi_splash
-        pyi_splash.update_text(text)
-    except Exception:
-        pass
-
-
 def close_splash():
     try:
         import pyi_splash
@@ -1189,7 +1194,7 @@ def main():
         QMessageBox.critical(None, APP_TITLE, "pywin32 and xlwings are needed.\n\n"
                              "Run:  pip install pywin32 xlwings")
         return 1
-    splash_text("Opening the window...")
+    splash_progress(100, "window")
     win = CheckerWindow()
     win.show()
     close_splash()

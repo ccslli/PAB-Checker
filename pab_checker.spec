@@ -55,10 +55,26 @@ a.datas = [d for d in a.datas if keep(d)]
 
 pyz = PYZ(a.pure)
 
-# Start-up splash: shown straight away while the one-file .exe unpacks itself,
-# with PyInstaller's status text in the strip along the bottom.  The window
-# closes it once it's open (pyi_splash in pab_checker_gui.py).
-splash = Splash(
+# Start-up splash: shown straight away while the one-file .exe unpacks itself;
+# the window closes it once it's open (pyi_splash in pab_checker_gui.py).
+# "Loading..." with a 0-100% bar instead of each file's name, as in Design Team
+# Tools: branding/splash_progress.tcl is added to PyInstaller's splash script,
+# with the number of files to unpack.
+class ProgressSplash(Splash):
+    total_files = 0
+
+    def generate_script(self):
+        script = super().generate_script()
+        with open(os.path.join(HERE, "branding", "splash_progress.tcl"), encoding="utf-8") as fh:
+            script += "\n" + fh.read().replace("@TOTAL@", str(self.total_files))
+        with open(self.script_name, "w", encoding="utf-8") as fh:     # keep build\..._script.tcl accurate
+            fh.write(script)
+        return script
+
+
+ProgressSplash.total_files = len({entry[0] for entry in a.binaries + a.datas})   # one splash update per file
+
+splash = ProgressSplash(
     os.path.join(HERE, "branding", "splash_pab_checker.png"),
     binaries=a.binaries,
     datas=a.datas,
@@ -68,7 +84,7 @@ splash = Splash(
     # script stops at the font and leaves an empty "tk" window instead of the splash
     text_font="{Segoe UI}",
     text_color="#9AA7B4",
-    text_default="Starting PAB Checker...",
+    text_default="Loading...",
     minify_script=True,
 )
 
